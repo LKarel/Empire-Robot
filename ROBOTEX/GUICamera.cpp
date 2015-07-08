@@ -3,6 +3,7 @@
 #include "qedit.h"
 
 #define ID_EDITCHILD 100
+#define WM_GRAPH_EVENT (WM_APP + 1)
 
 AM_MEDIA_TYPE *g_pmt = (AM_MEDIA_TYPE*)new byte[100];
 
@@ -15,7 +16,6 @@ HRESULT WriteBitmap(LPCWSTR, BITMAPINFOHEADER*, size_t, BYTE *, size_t);
 void CALLBACK OnGraphEvent(HWND hwnd);
 void prints(wchar_t* text, ...);
 
-const UINT WM_GRAPH_EVENT = WM_APP + 1;
 
 IMediaControl *pControl = NULL;
 IMediaEventEx   *pEvent = NULL;
@@ -24,13 +24,19 @@ IGraphBuilder *pGraph = NULL;
 ICaptureGraphBuilder2 *pBuild = NULL;
 IMFVideoDisplayControl *pDisplay = NULL;
 HRESULT hr;
-BYTE *g_pBuffer = NULL;
+BYTE *g_pBuffer = NULL; //buffer of the image displayed on the right side of the screen
 BOOL start = TRUE;
 BITMAPINFOHEADER bmih;
 BITMAPINFO dbmi;
 HBITMAP hBitmap = NULL;
 HWND hwndEdit = NULL;
-extern HANDLE signal;
+extern HANDLE readySignal;
+extern HANDLE getImageSignal;
+extern HANDLE setImageSignal;
+extern HANDLE button2Signal;
+HANDLE newImageSignal = CreateEvent(NULL, FALSE, FALSE, NULL);
+enum { ID_BUTTON1, ID_BUTTON2 };
+extern BYTE *editBuffer;
 
 class SampleGrabberCallback : public ISampleGrabberCB
 {
@@ -63,15 +69,23 @@ public:
 
 	STDMETHODIMP BufferCB(double Time, BYTE *pBuffer, long BufferLen)
 	{
-		if (g_pBuffer != NULL) {
+		if (g_pBuffer != NULL && !WaitForSingleObject(setImageSignal,0)) {
+			GdiFlush();
+			CopyMemory(g_pBuffer, editBuffer, BufferLen);
+		}
+		else if (g_pBuffer != NULL && !WaitForSingleObject(newImageSignal, 0)) {
 			GdiFlush();
 			CopyMemory(g_pBuffer, pBuffer, BufferLen);
+		}
+		else if (!WaitForSingleObject(getImageSignal, 0)) {
+			CopyMemory(editBuffer, g_pBuffer, BufferLen);
+			SetEvent(readySignal);
 		}
 		//printf("\nBufferCB %ld %ld\n\n", BufferLen, pBuffer);
 		//VIDEOINFOHEADER *videoInfoHeader = (VIDEOINFOHEADER*)g_pmt->pbFormat;
 		//WriteBitmap(L"testpic.bmp", &videoInfoHeader->bmiHeader,
 		//	g_pmt->cbFormat - SIZE_PREHEADER, pBuffer, BufferLen);
-		pEventSink->Notify(EC_USER, (LONG_PTR)g_pBuffer, BufferLen);
+		pEventSink->Notify(EC_USER, 0, BufferLen);
 		return S_OK;
 	}
 };
@@ -100,11 +114,15 @@ DWORD WINAPI GUICamera(LPVOID lpParameter)
 	hwndEdit = CreateWindowEx(
 		0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
 		0, 480, 640 + 640, 200, hwnd, (HMENU)ID_EDITCHILD, (HINSTANCE)GetWindowLong(hwnd, GWL_HINSTANCE), NULL);
-	
+	HWND button1 = CreateWindowEx(0, L"BUTTON", L"N_IMG",
+		WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 0, 65, 20, hwnd, (HMENU)ID_BUTTON1, hInstance, NULL);
+	HWND button2 = CreateWindowEx(0, L"BUTTON", L"PROC",
+		WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 20, 65, 20, hwnd, (HMENU)ID_BUTTON2, hInstance, NULL);
+
 	ShowWindow(hwnd, SW_SHOWDEFAULT);
 
 	//Signal that the initialization is done
-	SetEvent(signal);
+	SetEvent(readySignal);
 
 	// Run the message loop.
 
@@ -126,7 +144,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	case WM_CREATE:
 		InitVideo(hwnd);
 		RECT rc;
-		rc.left = 0, rc.top = 0, rc.right = 640 + 640, rc.bottom = 680;
+		rc.left = 0, rc.top = 0, rc.right = 640 + 640+65, rc.bottom = 680;
 		AdjustWindowRectEx(&rc, GetWindowLong(hwnd, GWL_STYLE), FALSE, GetWindowLong(hwnd, GWL_EXSTYLE));
 		SetWindowPos(hwnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER);
 		return 0;
@@ -142,20 +160,34 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	case WM_GRAPH_EVENT:
 		OnGraphEvent(hwnd);
 		return 0;
+	case WM_COMMAND:
+		switch (LOWORD(wParam)) {
+		case ID_BUTTON1:
+			SetEvent(newImageSignal);
+			prints(L"New Image clicked\n");
+			return 0;
+		case ID_BUTTON2:
+			SetEvent(button2Signal);
+			prints(L"Starting processing\n");
+			return 0;
+		}
+		break;
 	}
 	return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
 void OnPaint(HWND hwnd) {
+	RECT rc{ 640 + 640,0,640 + 640 + 65,680 };
 	PAINTSTRUCT ps;
 	HDC hdc;
 	hdc = BeginPaint(hwnd, &ps);
-
-	if (hBitmap == NULL)
+	
+	FillRect(hdc, &rc, (HBRUSH)(COLOR_WINDOW));
+	if (hBitmap == NULL) {
 		/*hBitmap = CreateDIBitmap(hdc, (const BITMAPINFOHEADER*)&bmih,
 		0, g_pBuffer, (const BITMAPINFO*)&dbmi, DIB_RGB_COLORS);*/
 		hBitmap = CreateDIBSection(hdc, (const BITMAPINFO*)&dbmi, DIB_RGB_COLORS, (void**)&g_pBuffer, NULL, NULL);
-
+	}
 	HDC hdcMem = CreateCompatibleDC(hdc);
 	HBITMAP hbmOld = (HBITMAP)SelectObject(hdcMem, hBitmap);
 	int a = BitBlt(hdc, 640, 0, 640, 480, hdcMem, 0, 0, SRCCOPY);
@@ -215,7 +247,7 @@ void InitVideo(HWND hwnd) {
 				if (SUCCEEDED(hr))
 				{
 					// Add the filter if the name is appropriate.
-					if (wcscmp(varName.bstrVal, L"Philips SPC 900NC PC Camera") == 0) {
+					if (wcscmp(varName.bstrVal, L"Philips SPC 900NC PC Camera") == 0 ||1) {
 						VariantClear(&varName);
 						hr = pMoniker->BindToObject(0, 0, IID_IBaseFilter, (void**)&pCap);
 						if (SUCCEEDED(hr))
