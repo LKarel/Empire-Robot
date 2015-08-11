@@ -12,6 +12,7 @@ AM_MEDIA_TYPE *g_pmt = (AM_MEDIA_TYPE*)new byte[100];
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 void OnPaint(HWND hwnd);
 void OnPaintCalibrator(HWND hwnd);
 void InitVideo(HWND hwnd);
@@ -39,6 +40,8 @@ BITMAPINFO dbmi;
 HBITMAP hBitmap = NULL;
 HWND hwndEdit = NULL;
 HWND hwndCalibrate = NULL;
+HWND hwndVideo = NULL;
+HWND hwndMain = NULL;
 BOOLEAN calibrating = FALSE;
 extern HANDLE readySignal;
 extern HANDLE getImageSignal;
@@ -140,6 +143,7 @@ public:
 			//WriteBitmap(L"testpic.bmp", &videoInfoHeader->bmiHeader,
 			//	g_pmt->cbFormat - SIZE_PREHEADER, pBuffer, BufferLen);
 		}
+		//notify that a new image has arrived
 		pEventSink->Notify(EC_USER, 0, BufferLen);
 		return S_OK;
 	}
@@ -147,12 +151,13 @@ public:
 
 SampleGrabberCallback g_GrabberCB;
 
+const wchar_t CLASS_NAME[] = L"Main Window Class";
+
 DWORD WINAPI GUICamera(LPVOID lpParameter)
 {
 	readFromFileColorThresholds();
 
 	//make main window
-	const wchar_t CLASS_NAME[] = L"Main Window Class";
 	
 	HINSTANCE hInstance = GetModuleHandle(NULL);
 	WNDCLASSEX wc = {};
@@ -166,12 +171,12 @@ DWORD WINAPI GUICamera(LPVOID lpParameter)
 
 	RegisterClassEx(&wc);
 
-	HWND hwnd = CreateWindowEx(0, CLASS_NAME, L"ROBOPROG",
+	hwndMain = CreateWindowEx(0, CLASS_NAME, L"ROBOPROG",
 		WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
 		CW_USEDEFAULT, NULL, NULL, hInstance, NULL);
 
 
-	ShowWindow(hwnd, SW_SHOWDEFAULT);
+	ShowWindow(hwndMain, SW_SHOWDEFAULT);
 
 	//make calibration window
 
@@ -192,7 +197,24 @@ DWORD WINAPI GUICamera(LPVOID lpParameter)
 		WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
 		CW_USEDEFAULT, NULL, NULL, hInstance, NULL);
 
-	ShowWindow(hwndCalibrate, SW_HIDE);	
+	ShowWindow(hwndCalibrate, SW_HIDE);
+
+	//make video child window for EVR player:
+
+	const wchar_t CLASS_NAME_VIDEO[] = L"Video Window Class";
+
+	WNDCLASSEX wcVideo;
+	CopyMemory(&wcVideo, &wc, sizeof(WNDCLASSEX));
+	wcVideo.lpfnWndProc = VideoWindowProc;
+	wcVideo.lpszClassName = CLASS_NAME_VIDEO;
+
+	RegisterClassEx(&wcVideo);
+
+	hwndVideo = CreateWindowEx(WS_EX_COMPOSITED, CLASS_NAME_VIDEO, L"Video Window",
+		WS_CHILD, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+		CW_USEDEFAULT, hwndMain, NULL, hInstance, NULL);
+
+	ShowWindow(hwndVideo, SW_SHOWDEFAULT);
 
 	//Signal that the initialization is done
 	SetEvent(readySignal);
@@ -227,7 +249,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		HWND button3 = CreateWindowEx(0, L"BUTTON", L"CALIB",
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 40, 65, 20, hwnd, (HMENU)ID_BUTTON3, hInstance, NULL);
 
-		InitVideo(hwnd);
 		RECT rc;
 		rc.left = 0, rc.top = 0, rc.right = 640 + 640 + 65, rc.bottom = 680;
 		AdjustWindowRectEx(&rc, GetWindowLong(hwnd, GWL_STYLE), FALSE, GetWindowLong(hwnd, GWL_EXSTYLE));
@@ -244,9 +265,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		ShowWindow(hwndCalibrate, SW_HIDE);
 		Release();
 		PostQuitMessage(0);
-		return 0;
-	case WM_GRAPH_EVENT:
-		OnGraphEvent(hwnd);
 		return 0;
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
@@ -288,8 +306,9 @@ void OnPaint(HWND hwnd) {
 	DeleteDC(hdcMem);
 	DeleteObject(hbmOld);
 
-	EndPaint(hwnd, &ps);
 	pDisplay->RepaintVideo();
+
+	EndPaint(hwnd, &ps);
 }
 
 LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -470,6 +489,23 @@ void OnPaintCalibrator(HWND hwnd) {
 	EndPaint(hwnd, &ps);
 }
 
+
+LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+	switch (uMsg) {
+	case WM_CREATE:
+		SetWindowPos(hwnd, NULL, 0, 0, 640, 480, SWP_NOZORDER);
+		InitVideo(hwnd);
+		return 0;
+	case WM_PAINT:
+		pDisplay->RepaintVideo();
+		return 0;
+	case WM_GRAPH_EVENT:
+		OnGraphEvent(hwnd);
+		return 0;
+	}
+	return DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
 void InitVideo(HWND hwnd) {
 	// Initialize the COM library.
 	hr = CoInitialize(NULL);
@@ -517,12 +553,15 @@ void InitVideo(HWND hwnd) {
 				if (SUCCEEDED(hr))
 				{
 					// Add the filter if the name is appropriate.
-					if (wcscmp(varName.bstrVal, L"Philips SPC 900NC PC Camera") == 0 ||1) {
+					if (wcscmp(varName.bstrVal, L"Philips SPC 900NC PC Camera") == 0 || 
+						wcscmp(varName.bstrVal, L"Integrated Webcam") == 0) {
 						VariantClear(&varName);
 						hr = pMoniker->BindToObject(0, 0, IID_IBaseFilter, (void**)&pCap);
 						if (SUCCEEDED(hr))
 						{
 							hr = pGraph->AddFilter(pCap, L"Capture Filter");
+							pMoniker->Release();
+							break;
 						}
 					}
 				}
@@ -552,7 +591,9 @@ void InitVideo(HWND hwnd) {
 		//               videoInfoHeader->bmiHeader.biSizeImage,videoInfoHeader->dwBitRate/(8.0*1000),
 		//               10000000.0/(videoInfoHeader->AvgTimePerFrame));
 		if (videoInfoHeader->bmiHeader.biWidth == 640 &&
-			videoInfoHeader->bmiHeader.biBitCount == 16) break;
+			videoInfoHeader->bmiHeader.biBitCount == 16) {
+			break;
+		}
 	}
 	ppEnum->Release();
 	pPin->Release();
@@ -591,6 +632,7 @@ void InitVideo(HWND hwnd) {
 	IBaseFilter *pEVR = NULL;
 	hr = CoCreateInstance(CLSID_EnhancedVideoRenderer, NULL, CLSCTX_INPROC_SERVER,
 		IID_PPV_ARGS(&pEVR));
+	printf("result: %d\n", hr);
 	IMFGetService *pGS = NULL;
 
 	hr = pEVR->QueryInterface(IID_PPV_ARGS(&pGS));
@@ -602,20 +644,20 @@ void InitVideo(HWND hwnd) {
 	//this connects the three filters together and adds whatever else filters are necessary to get RGB32 for the grabber
 	hr = pBuild->RenderStream(&PIN_CATEGORY_PREVIEW, &MEDIATYPE_Video, pCap, pGrabberF, pEVR); //returns VFW_S_NOPREVIEWPIN
 
-																							   //store the media type and set up the bitmap headers, so that we can later create a bitmap
+	 //store the media type and set up the bitmap headers, so that we can later create a bitmap
 	pGrabber->GetConnectedMediaType(g_pmt);
 	bmih = (((VIDEOINFOHEADER *)g_pmt->pbFormat)->bmiHeader);
 	ZeroMemory(&dbmi, sizeof(dbmi));
 	dbmi.bmiHeader = bmih;
 
-	//run the thing
-	pControl->Run();
-
 	//set the video position in the window
 	RECT rc = { 0,0,640,480 };
 	pDisplay->SetVideoPosition(NULL, &rc);
 
-	//release the object no longer needed
+	//run the thing
+	pControl->Run();
+
+	//release the objects no longer needed
 	pControl->Release();
 	pCap->Release();
 	pGrabberF->Release();
@@ -701,9 +743,9 @@ void CALLBACK OnGraphEvent(HWND hwnd)
 			PostQuitMessage(1);
 			Release();
 			break;
-		case EC_USER:
+		case EC_USER: //invalidate the rectangle where we draw the bitmap, so that it gets redrawn
 			const RECT rc{ 640,0,640 + 640,480 };
-			InvalidateRect(hwnd, &rc, FALSE);
+			InvalidateRect(hwndMain, &rc, FALSE);
 			break;
 		}
 
