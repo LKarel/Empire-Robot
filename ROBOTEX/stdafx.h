@@ -7,7 +7,7 @@
 
 #pragma comment(linker,"\"/manifestdependency:type='win32' \
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
-processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"") //uses nicer visual style, otherwise its windows classic
+processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"") //uses nicer visual style, otherwise it's windows classic
 
 #include "targetver.h"
 

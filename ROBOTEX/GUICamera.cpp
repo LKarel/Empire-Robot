@@ -4,28 +4,32 @@
 
 #define max3(r,g,b) ( r >= g ? (r >= b ? r : b) : (g >= b ? g : b) ) //max of three
 #define min3(r,g,b) ( r <= g ? (r <= b ? r : b) : (g <= b ? g : b) ) //min of three
+
+//constants for events and ID-s of GUI elements
 #define ID_EDITCHILD 100
 #define WM_GRAPH_EVENT (WM_APP + 1)
 
-
+//used for video media type to save the type and find the right one when initializing the camera
 AM_MEDIA_TYPE *g_pmt = (AM_MEDIA_TYPE*)new byte[100];
 
+//window procedures, used in standard Windows GUI programming
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 void OnPaint(HWND hwnd);
 void OnPaintCalibrator(HWND hwnd);
-void InitVideo(HWND hwnd);
-void PrintFilters(IGraphBuilder *pGraph);
-void Release();
-HRESULT WriteBitmap(LPCWSTR, BITMAPINFOHEADER*, size_t, BYTE *, size_t);
-void CALLBACK OnGraphEvent(HWND hwnd);
+
+void InitVideo(HWND hwnd);		//the main function that sets up the camera and the frame grabber
+void PrintFilters(IGraphBuilder *pGraph);	//for testing the filter graph while setting up the camera
+void Release();				//releases everything before quitting
+HRESULT WriteBitmap(LPCWSTR, BITMAPINFOHEADER*, size_t, BYTE *, size_t); //writes a buffer to a file, for testing
+void CALLBACK OnGraphEvent(HWND hwnd);	//
 void prints(wchar_t* text, ...);
 DWORD HSVtoRGB(float, float, float);
 void saveToFileColorThresholds();
 void readFromFileColorThresholds();
 
-
+//variables specific to the way the camera is set up, it's what Windows DirectShow uses
 IMediaControl *pControl = NULL;
 IMediaEventEx   *pEvent = NULL;
 IMediaEventSink   *pEventSink = NULL;
@@ -33,16 +37,27 @@ IGraphBuilder *pGraph = NULL;
 ICaptureGraphBuilder2 *pBuild = NULL;
 IMFVideoDisplayControl *pDisplay = NULL;
 HRESULT hr;
+
 BYTE *g_pBuffer = NULL; //buffer of the image displayed on the right side of the screen
 BOOL start = TRUE;
+
+//headers for the bitmap, used if you want to write an image to a file or create a bitmap for displaying
 BITMAPINFOHEADER bmih;
 BITMAPINFO dbmi;
 HBITMAP hBitmap = NULL;
+
+//the handles for the GUI elements
 HWND hwndEdit = NULL;
 HWND hwndCalibrate = NULL;
 HWND hwndVideo = NULL;
 HWND hwndMain = NULL;
-BOOLEAN calibrating = FALSE;
+HWND hwndHue;	//handles for the sliders in the calibrating window
+HWND hwndSaturation;
+HWND hwndValue;
+
+BOOLEAN calibrating = FALSE;	//state variable
+
+//signals for communicating between threads
 extern HANDLE readySignal;
 extern HANDLE getImageSignal;
 extern HANDLE setImageSignal;
@@ -51,9 +66,6 @@ HANDLE newImageSignal = CreateEvent(NULL, FALSE, FALSE, NULL);
 enum { ID_BUTTON1, ID_BUTTON2, ID_BUTTON3, ID_BUTTON_DONE, ID_TRACKBAR_HUE, ID_TRACKBAR_SATURATION, 
 	ID_TRACKBAR_VALUE, ID_RADIOBOXGROUP_MINMAX, ID_RADIOBOX_MIN, ID_RADIOBOX_MAX, ID_BUTTON_SAVE};
 extern BYTE *editBuffer;
-HWND hwndHue;
-HWND hwndSaturation;
-HWND hwndValue;
 float hue = 0;
 float hueMin;
 float hueMax;
@@ -66,6 +78,8 @@ float valueMax;
 enum CurrentCalibratorSetting { minimum, maximum };
 CurrentCalibratorSetting currentCalibratorSetting = minimum;
 
+//this is the class that is needed for grabbing frames, the method BufferCB gets called everytime
+//there is a new frame ready with a pointer to the data
 class SampleGrabberCallback : public ISampleGrabberCB
 {
 public:
@@ -494,7 +508,9 @@ LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 	switch (uMsg) {
 	case WM_CREATE:
 		SetWindowPos(hwnd, NULL, 0, 0, 640, 480, SWP_NOZORDER);
+		prints(L"Initializing camera\n");
 		InitVideo(hwnd);
+		prints(L"Camera initialized\n");
 		return 0;
 	case WM_PAINT:
 		pDisplay->RepaintVideo();
@@ -550,11 +566,13 @@ void InitVideo(HWND hwnd) {
 				VARIANT varName;
 				VariantInit(&varName);
 				hr = pPropBag->Read(L"FriendlyName", &varName, 0);
+				prints(varName.bstrVal);
 				if (SUCCEEDED(hr))
 				{
 					// Add the filter if the name is appropriate.
-					if (wcscmp(varName.bstrVal, L"Philips SPC 900NC PC Camera") == 0 || 
-						wcscmp(varName.bstrVal, L"Integrated Webcam") == 0) {
+					if (wcscmp(varName.bstrVal, L"HD Pro Webcam C920") == 0 || 
+						wcscmp(varName.bstrVal, L"Philips SPC 900NC PC Camera") == 0 ||
+						wcscmp(varName.bstrVal, L"Integrated Webcam") == 0 || 1) {
 						VariantClear(&varName);
 						hr = pMoniker->BindToObject(0, 0, IID_IBaseFilter, (void**)&pCap);
 						if (SUCCEEDED(hr))
@@ -563,7 +581,16 @@ void InitVideo(HWND hwnd) {
 							pMoniker->Release();
 							break;
 						}
+						else {
+							prints(L"camera error");
+						}
 					}
+					else {
+						prints(L"camera error");
+					}
+				}
+				else {
+					prints(L"camera error");
 				}
 				VariantClear(&varName);
 			}

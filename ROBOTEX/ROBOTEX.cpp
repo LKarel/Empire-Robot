@@ -77,7 +77,7 @@ void calculateBrightness(BYTE* buffer) {
 	}
 }
 
-//calculates the Y' values module some number
+//calculates the Y' values modulo some number
 void smoother(BYTE* buffer) {
 	for (DWORD *pixBuffer = (DWORD *)buffer; pixBuffer < 640 * 480 + (DWORD *)buffer;++pixBuffer) {
 		DWORD pixel = *pixBuffer;
@@ -185,7 +185,7 @@ void kMeans(int k, int iterations, BYTE* buffer) { //k centers, done for iterati
 		}
 	}
 
-	//draw crosses
+	//draw the crosses
 	for (int currentN = 0; currentN < k; ++currentN) {
 		drawCross(xCenter[currentN], yCenter[currentN], 0x00FFFFFF, editBuffer);
 	}
