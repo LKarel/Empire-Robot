@@ -6,20 +6,8 @@
 #define min3(r,g,b) ( r <= g ? (r <= b ? r : b) : (g <= b ? g : b) ) //min of three
 
 HANDLE readySignal = CreateEvent(NULL, FALSE, FALSE, NULL);
-HANDLE getImageSignal = CreateEvent(NULL, FALSE,FALSE,NULL);
-HANDLE setImageSignal = CreateEvent(NULL, FALSE, FALSE, NULL);
-HANDLE button2Signal = CreateEvent(NULL, FALSE, FALSE, NULL);
+HANDLE newImageAnalyzed = CreateEvent(NULL, FALSE,FALSE,NULL);
 HANDLE GUIThread;
-extern BYTE *g_pBuffer;
-extern float hueMin;
-extern float hueMax;
-extern float saturationMin;
-extern float saturationMax;
-extern float valueMin;
-extern float valueMax;
-DWORD *g_pBufferDW = (DWORD*)(&g_pBuffer);
-BYTE *editBuffer;
-BYTE *doubleBuffer;
 
 void imageProcessingTest();
 void calculateBrightness(BYTE* buffer);
@@ -32,8 +20,6 @@ void calculateSaturation(BYTE* buffer);
 void threshold(BYTE* buffer);
 
 int main() {
-	editBuffer = (BYTE*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 640 * 480 * 4);
-	doubleBuffer = (BYTE*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 640 * 480 * 4);
 	//Create the GUI in a separate thread
 	GUIThread = CreateThread(NULL, 0, GUICamera, 0, 0, NULL);
 	//Wait for the GUI to initialize
@@ -41,7 +27,6 @@ int main() {
 
 	//TODO control the robot...
 	prints(L"Testing printing\n"); //this function can print using the wprintf syntax
-	imageProcessingTest();
 
 	//Don't exit this thread before the GUI
 	WaitForSingleObject(GUIThread, INFINITE);
@@ -51,20 +36,18 @@ void imageProcessingTest() {
 	while (true) {
 		//get the image after button 2 was pressed
 		//WaitForSingleObject(button2Signal, INFINITE);
-		SetEvent(getImageSignal);
-		WaitForSingleObject(readySignal, INFINITE); //image has been copied to editBuffer
-		CopyMemory(doubleBuffer, editBuffer, 640 * 480 * 4);
+		//CopyMemory(doubleBuffer, editBuffer, 640 * 480 * 4);
 		//prints(L"here\n");
 		//Filters:
-		threshold(doubleBuffer);
+		//threshold(doubleBuffer);
 		//calculateBrightness(editBuffer);
 		//calculateHue(doubleBuffer);
 		//calculateChroma(doubleBuffer);
 		//calculateSaturation(editBuffer);
-		kMeans(2,5, doubleBuffer);
+		//kMeans(2,5, doubleBuffer);
 
 		//display the image, copy editBuffer to the screen buffer g_pBuffer
-		SetEvent(setImageSignal);
+		//SetEvent(setImageSignal);
 	}
 }
 
@@ -185,51 +168,38 @@ void kMeans(int k, int iterations, BYTE* buffer) { //k centers, done for iterati
 		}
 	}
 
-	//draw the crosses
-	for (int currentN = 0; currentN < k; ++currentN) {
-		drawCross(xCenter[currentN], yCenter[currentN], 0x00FFFFFF, editBuffer);
-	}
+	////draw the crosses
+	//for (int currentN = 0; currentN < k; ++currentN) {
+	//	drawCross(xCenter[currentN], yCenter[currentN], 0x00FFFFFF, editBuffer);
+	//}
 	delete[] xCenter, yCenter, xNewCenter, yNewCenter, CenterCount;
 }
 
-void threshold(BYTE* buffer) {
-	for (DWORD *pixBuffer = (DWORD*)buffer; pixBuffer < (DWORD*)buffer + 640*480; ++pixBuffer) {
-		DWORD pixel = *pixBuffer;
-		BYTE red = pixel & 0xFF, green = (pixel >> 8) & 0xFF, blue = (pixel >> 16) & 0xFF;
-
-		float hue;
-		//calculates hue in the range 0 to 6
-		if (red >= green && green >= blue && red > blue)	hue = ((float)(green - blue) / (red - blue));
-		else if (green > red && red >= blue)	hue = (2 - (float)(red - blue) / (green - blue));
-		else if (green >= blue && blue > red)	hue = (2 + (float)(blue - red) / (green - red));
-		else if (blue > green && green > red)	hue = (4 - (float)(green - red) / (blue - red));
-		else if (blue > red && red >= green)	hue = (4 + (float)(red - green) / (blue - green));
-		else if (red >= blue && blue > green)	hue = (6 - (float)(blue - green) / (red - green));
-		else hue = 0; //Hue when the image is gray red=green=blue
-
-		float saturation = (float)(max3(red, green, blue) - min3(red, green, blue))
-			/ max3(red, green, blue);
-
-		float value = (float)max3(red, green, blue) / 255;
-
-		if (hue < hueMin || hue > hueMax || saturation < saturationMin || saturation > saturationMax ||
-			value < valueMin || value > valueMax)
-			*pixBuffer = 0;
-	}
-}
-
-//draws a cross of the color #rrggbbaa to coordinates x, y starting from the bottom left corner (Windows bitmap uses that)
-void drawCross(int x, int y, int color, BYTE* buffer) {
-	DWORD *pixBuffer = (DWORD *)buffer;
-	for (int j = -1;j <= 1;++j)
-		for (int i = -10;i <= 10;++i)
-			if(0 <= x+i && x+i < 640 && 0 <= y+j && y+j < 480)
-				pixBuffer[x + i + 640 * (y+j)] = color;
-	for (int j = -1;j <= 1;++j)
-		for (int i = -10;i <= 10;++i)
-			if (0 <= x + j && x+j < 640 && 0 <= y + i && y+i < 480)
-				pixBuffer[x+j + 640 * (y+i)] = color;
-}
+//void threshold(BYTE* buffer) {
+//	for (DWORD *pixBuffer = (DWORD*)buffer; pixBuffer < (DWORD*)buffer + 640*480; ++pixBuffer) {
+//		DWORD pixel = *pixBuffer;
+//		BYTE red = pixel & 0xFF, green = (pixel >> 8) & 0xFF, blue = (pixel >> 16) & 0xFF;
+//
+//		float hue;
+//		//calculates hue in the range 0 to 6
+//		if (red >= green && green >= blue && red > blue)	hue = ((float)(green - blue) / (red - blue));
+//		else if (green > red && red >= blue)	hue = (2 - (float)(red - blue) / (green - blue));
+//		else if (green >= blue && blue > red)	hue = (2 + (float)(blue - red) / (green - red));
+//		else if (blue > green && green > red)	hue = (4 - (float)(green - red) / (blue - red));
+//		else if (blue > red && red >= green)	hue = (4 + (float)(red - green) / (blue - green));
+//		else if (red >= blue && blue > green)	hue = (6 - (float)(blue - green) / (red - green));
+//		else hue = 0; //Hue when the image is gray red=green=blue
+//
+//		float saturation = (float)(max3(red, green, blue) - min3(red, green, blue))
+//			/ max3(red, green, blue);
+//
+//		float value = (float)max3(red, green, blue) / 255;
+//
+//		if (hue < hueMin || hue > hueMax || saturation < saturationMin || saturation > saturationMax ||
+//			value < valueMin || value > valueMax)
+//			*pixBuffer = 0;
+//	}
+//}
 
 void COMTesting() {
 	HANDLE hComm = CreateFile(L"\\\\.\\COM12", GENERIC_READ | GENERIC_WRITE, 0, 0,

@@ -5,7 +5,9 @@ VisualStudioVersion = 14.0.22823.1
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ROBOTEX", "ROBOTEX\ROBOTEX.vcxproj", "{C05599F9-147C-41CB-957C-864041148F65}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Win32Project1", "Win32Project1\Win32Project1.vcxproj", "{2736FD08-A730-4AC5-8FB3-951F1C8B4948}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NUC test", "Win32Project1\Win32Project1.vcxproj", "{2736FD08-A730-4AC5-8FB3-951F1C8B4948}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Camera test", "Camera test\Camera test.vcxproj", "{9ACAC54F-4307-4FE5-8BB2-CE9FA9E7ED20}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -21,6 +23,10 @@ Global
 		{2736FD08-A730-4AC5-8FB3-951F1C8B4948}.Debug|x86.Build.0 = Debug|Win32
 		{2736FD08-A730-4AC5-8FB3-951F1C8B4948}.Release|x86.ActiveCfg = Release|Win32
 		{2736FD08-A730-4AC5-8FB3-951F1C8B4948}.Release|x86.Build.0 = Release|Win32
+		{9ACAC54F-4307-4FE5-8BB2-CE9FA9E7ED20}.Debug|x86.ActiveCfg = Debug|Win32
+		{9ACAC54F-4307-4FE5-8BB2-CE9FA9E7ED20}.Debug|x86.Build.0 = Debug|Win32
+		{9ACAC54F-4307-4FE5-8BB2-CE9FA9E7ED20}.Release|x86.ActiveCfg = Release|Win32
+		{9ACAC54F-4307-4FE5-8BB2-CE9FA9E7ED20}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
