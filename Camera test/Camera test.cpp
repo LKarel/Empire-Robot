@@ -55,7 +55,7 @@ public:
 
 	STDMETHODIMP BufferCB(double Time, BYTE *pBuffer, long BufferLen)
 	{
-		GdiFlush();
+		//GdiFlush();
 		return S_OK;
 	}
 };
@@ -95,7 +95,7 @@ int main()
 
 	RegisterClassEx(&wcVideo);
 
-	hwndVideo = CreateWindowEx(WS_EX_COMPOSITED, CLASS_NAME_VIDEO, L"Video Window",
+	hwndVideo = CreateWindowEx(0, CLASS_NAME_VIDEO, L"Video Window",
 		WS_CHILD, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
 		CW_USEDEFAULT, hwndMain, NULL, hInstance, NULL);
 
@@ -138,18 +138,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 	switch (uMsg) {
 	case WM_CREATE:
+		InitVideo(hwnd);
 		SetWindowPos(hwnd, HWND_TOP, 0, 0, 640, 480, NULL);
-		printf("Initializing camera yeah\n");
-		//InitVideo(hwnd);
-		printf("Camera initialized\n");
 		return 0;
 	case WM_PAINT:
 	{
+		printf("painting child");
 		RECT rc{ 100,100,200,200 };
 		PAINTSTRUCT ps;
 		HDC hdc;
 		hdc = BeginPaint(hwnd, &ps);
-		printf("painting child\n");
+		//printf("painting child\n");
 		//pDisplay->RepaintVideo();
 		FillRect(hdc, &rc, (HBRUSH)(COLOR_WINDOW));
 		EndPaint(hwnd, &ps);
@@ -157,12 +156,13 @@ LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 		return 0;
 	}
 	case WM_GRAPH_EVENT:
-		return 0;
+		break;
 	}
 	return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
 void InitVideo(HWND hwnd) {
+	printf("Initializing camera yeah\n");
 	IMediaControl *pControl = NULL;
 	IMediaEventEx   *pEvent = NULL;
 	IMediaEventSink   *pEventSink = NULL;
@@ -197,6 +197,7 @@ void InitVideo(HWND hwnd) {
 	hr = pSysDevEnum->CreateClassEnumerator(CLSID_VideoInputDeviceCategory, &pEnumCat, 0);
 	IBaseFilter *pCap = NULL;
 
+	boolean cameraChosen = false;
 	if (hr == S_OK)
 	{
 		// Enumerate the monikers.
@@ -213,11 +214,12 @@ void InitVideo(HWND hwnd) {
 				VARIANT varName;
 				VariantInit(&varName);
 				hr = pPropBag->Read(L"FriendlyName", &varName, 0);
-				prints(varName.bstrVal);
-				if (SUCCEEDED(hr))
+				prints(L"%s \n",varName.bstrVal);
+				if (SUCCEEDED(hr) && !cameraChosen)
 				{
 					// Add the filter if the name is appropriate.
-					if (wcscmp(varName.bstrVal, L"HD Pro Webcam C920") == 0 ||
+					if (wcscmp(varName.bstrVal, L"PS3Eye Camera") == 0 || 
+						wcscmp(varName.bstrVal, L"HD Pro Webcam C920") == 0 ||
 						wcscmp(varName.bstrVal, L"Philips SPC 900NC PC Camera") == 0 ||
 						wcscmp(varName.bstrVal, L"Integrated Webcam") == 0 || 1) {
 						VariantClear(&varName);
@@ -225,8 +227,7 @@ void InitVideo(HWND hwnd) {
 						if (SUCCEEDED(hr))
 						{
 							hr = pGraph->AddFilter(pCap, L"Capture Filter");
-							pMoniker->Release();
-							break;
+							cameraChosen = true;
 						}
 						else {
 							prints(L"camera error");
@@ -258,14 +259,14 @@ void InitVideo(HWND hwnd) {
 	VIDEOINFOHEADER* videoInfoHeader = NULL;
 	while (hr = ppEnum->Next(1, &pmt, NULL), hr == 0) {
 		videoInfoHeader = (VIDEOINFOHEADER*)pmt->pbFormat;
-		//        printf("Width: %d, Height: %d, BitCount: %d, Compression: %X\n",
-		//               videoInfoHeader->bmiHeader.biWidth,videoInfoHeader->bmiHeader.biHeight,
-		//               videoInfoHeader->bmiHeader.biBitCount,videoInfoHeader->bmiHeader.biCompression);
-		//        printf("Image size: %d, Bitrate KB: %.2f, FPS: %.2f\n",
-		//               videoInfoHeader->bmiHeader.biSizeImage,videoInfoHeader->dwBitRate/(8.0*1000),
-		//               10000000.0/(videoInfoHeader->AvgTimePerFrame));
-		if (videoInfoHeader->bmiHeader.biWidth == 640 &&
-			videoInfoHeader->bmiHeader.biBitCount == 16) {
+		        printf("Width: %d, Height: %d, BitCount: %d, Compression: %X\n",
+		               videoInfoHeader->bmiHeader.biWidth,videoInfoHeader->bmiHeader.biHeight,
+		               videoInfoHeader->bmiHeader.biBitCount,videoInfoHeader->bmiHeader.biCompression);
+		        printf("Image size: %d, Bitrate KB: %.2f, FPS: %.2f\n",
+		               videoInfoHeader->bmiHeader.biSizeImage,videoInfoHeader->dwBitRate/(8.0*1000),
+		               10000000.0/(videoInfoHeader->AvgTimePerFrame));
+		if (videoInfoHeader->bmiHeader.biWidth == 640 /*&&
+			videoInfoHeader->bmiHeader.biBitCount == 16*/) {
 			break;
 		}
 	}
@@ -338,4 +339,5 @@ void InitVideo(HWND hwnd) {
 	pGrabberF->Release();
 	pGrabber->Release();
 	pBuild->Release();
+	printf("Camera initialized\n");
 }

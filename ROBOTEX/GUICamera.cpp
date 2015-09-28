@@ -560,7 +560,7 @@ DWORD WINAPI GUICamera(LPVOID lpParameter)
 
 	RegisterClassEx(&wcVideo);
 
-	hwndVideo = CreateWindowEx(WS_EX_COMPOSITED, CLASS_NAME_VIDEO, L"Video Window",
+	hwndVideo = CreateWindowEx(0, CLASS_NAME_VIDEO, L"Video Window",
 		WS_CHILD, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
 		CW_USEDEFAULT, hwndMain, NULL, hInstance, NULL);
 
