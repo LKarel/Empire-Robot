@@ -124,6 +124,47 @@ colorValues *activeColors;	//the current active color values in the calibrator
 enum CurrentCalibratorSetting { minimum, maximum };
 CurrentCalibratorSetting currentCalibratorSetting = minimum;
 
+//temporary for the weekly assignment, so that we could show something that drives the engines
+//void rotate(HANDLE hComm, int speed, float time) {
+//	char writeBuffer[32] = {};
+//	DWORD bytesWritten;
+//	int len = sprintf_s(writeBuffer, "sd%d\n", speed);
+//
+//	WriteFile(hComm, writeBuffer, len, &bytesWritten, NULL);
+//	Sleep((DWORD)(time*1000-100));
+//	WriteFile(hComm, "sd0\n", 4, &bytesWritten, NULL);
+//	time = time > 0.1 ? time : 0.1;
+//	Sleep(100);
+//}
+//
+//void driveTest() {
+//	HANDLE hComm = CreateFile(L"\\\\.\\COM12", GENERIC_READ | GENERIC_WRITE, 0, 0,
+//		OPEN_EXISTING, 0, 0);
+//	if (hComm == INVALID_HANDLE_VALUE) {
+//		prints(L"INVALID COM PORT HANDLE\n");
+//		return;
+//	}
+//
+//	char writeBuffer[32] = {};
+//	DWORD bytesWritten;
+//	WriteFile(hComm, "st\n", 3, &bytesWritten, NULL);
+//
+//	rotate(hComm, 30, 1);
+//	rotate(hComm, 50, 0.5);
+//	rotate(hComm, 80, 0.5);
+//	rotate(hComm, 0, 0.5);
+//	rotate(hComm, -60, 0.5);
+//
+//	char *readBuffer[128]{};
+//	DWORD bytesRead;
+//	for (int i = 0;i < 10;++i) {
+//		if(!ReadFile(hComm, readBuffer, 1, &bytesRead, NULL))
+//			prints(L"read error\n");
+//		prints(L"%s\n", readBuffer);
+//	}
+//	CloseHandle(hComm);
+//}
+
 //this analyzes the image to find all the balls, the goals and the black lines
 void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 	int ballCount = 0, goalCount = 0;
@@ -382,6 +423,18 @@ void drawCross(int x, int y, int color, BYTE* buffer) {
 		for (int i = -10;i <= 10;++i)
 			if (0 <= x + j && x + j < 640 && 0 <= y + i && y + i < 480)
 				pixBuffer[x + j + 640 * (y + i)] = color;
+}
+
+void drawLine(int angle, int radius) {
+	//x*cos+y*sin=r
+	float sin = sinf(angle);
+	float cos = cosf(angle);
+	if (sin < 1.0 / 1000 && sin > -1.0 / 1000) {
+		
+	}
+	for (int x = -320; x < 320; ++x) {
+		int y = (radius - x*cos) / sin;
+	}
 }
 
 //this is the class that is needed for grabbing frames, the method BufferCB gets called everytime
@@ -1132,10 +1185,10 @@ void InitVideo(HWND hwnd) {
 }
 
 void Release() {
+	pGraph->Release();
 	DeleteObject(hBitmap);
 	pEventSink->Release();
 	pEvent->Release();
-	pGraph->Release();
 	CoUninitialize();
 }
 
