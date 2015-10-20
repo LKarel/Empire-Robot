@@ -2,7 +2,7 @@
 #include "GUICamera.h"
 #include "qedit.h"
 
-#define PI (3.1415927)
+#define PI (3.1415927f)
 #define MAX3(r,g,b) ( r >= g ? (r >= b ? r : b) : (g >= b ? g : b) ) //max of three
 #define MIN3(r,g,b) ( r <= g ? (r <= b ? r : b) : (g <= b ? g : b) ) //min of three
 #define OBJECTINDEX(x) ((x)&0x7FFFFFFF)	//first 31 bits, gives the index of the current ball or goal
@@ -14,7 +14,7 @@
 			(blue > green && green > red) ?	hue = (4 - (float)(green - red) / (blue - red)):\
 			(blue > red && red >= green) ?	hue = (4 + (float)(red - green) / (blue - green)):\
 			(red >= blue && blue > green) ?	hue = (6 - (float)(blue - green) / (red - green)):\
-			0.0) //Hue when the image is gray red=green=blue
+			0.0f) //Hue when the image is gray red=green=blue
 #define SATURATION(red,green,blue) ((float)(MAX3(red, green, blue) - MIN3(red, green, blue)) / \
 									MAX3(red, green, blue))
 #define VALUE(red,green,blue) ((float)MAX3(red, green, blue)/255)
@@ -84,6 +84,7 @@ BOOLEAN whitenThresholdPixels;
 //signals for communicating between threads
 extern HANDLE readySignal;
 extern HANDLE newImageAnalyzed;
+HANDLE writeMutex = CreateMutex(NULL, FALSE, NULL);
 
 enum {
 	ID_BUTTON1, ID_BUTTON2, ID_BUTTON3, ID_BUTTON_DONE, ID_TRACKBAR_HUE, ID_TRACKBAR_SATURATION,
@@ -92,20 +93,8 @@ enum {
 	ID_CHECKBOX_WHITEN
 };
 
-//information about a detected object
-struct objectInfo {
-	int x;
-	int y;
-	int pixelcount; //how many pixels are in the blob
-};
-
-struct objectCollection {
-	int count;
-	objectInfo *data;
-	int size; //how many objects the data buffer can hold
-} balls, goals;
-
-void doubleObjectBufferSize(objectCollection*);
+objectCollection balls, goals, ballsShare, goalsShare; //local data structure for holding objects and shared structures
+lineCollection lines, linesShare; //data for the lines
 
 //structure for storing the threshold color values of different objects
 struct colorValues {
@@ -169,11 +158,14 @@ CurrentCalibratorSetting currentCalibratorSetting = minimum;
 void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 	int ballCount = 0, goalCount = 0;
 	DWORD* pixBuffer = (DWORD*)pBuffer;
-	ZeroMemory(pBufferCopy, 640 * 480 * 4);
-	ZeroMemory(houghTransformBuffer, 100 * 100 * 4);
+	ZeroMemory(pBufferCopy, 640 * 480 * 4); //zero the buffer with the indexes and object information
+	ZeroMemory(houghTransformBuffer, 150 * 150 * 4);
 	ZeroMemory(balls.data, balls.size*sizeof(objectInfo));
 	ZeroMemory(goals.data, goals.size*sizeof(objectInfo));
+	ZeroMemory(lines.data, lines.size*sizeof(lineInfo));
 	balls.count = 0;
+	goals.count = 0;
+	lines.count = 0;
 	for (int y = 0; y < 480; ++y) {
 		for (int x = 0; x < 640; ++x) {
 			int red = (pixBuffer[x + y * 640]) & 0xFF, green = (pixBuffer[x + y * 640] >> 8) & 0xFF,
@@ -201,7 +193,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 						balls.data[OBJECTINDEX(pBufferCopy[x - 1 + 640 * y])] = {};
 					}
 					//change all the pixels before to the new object index
-					pixBuffer[x + 640 * y] = index;
+					pBufferCopy[x + 640 * y] = index;
 					balls.data[index].pixelcount += 1;
 					balls.data[index].x += x;
 					balls.data[index].y += y;
@@ -286,7 +278,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 						goals.data[OBJECTINDEX(pBufferCopy[x - 1 + 640 * y])] = {};
 					}
 					//change all the pixels before to the new object index
-					pixBuffer[x + 640 * y] = index + BIT32;
+					pBufferCopy[x + 640 * y] = index + BIT32;
 					goals.data[index].pixelcount += 1;
 					goals.data[index].x += x;
 					goals.data[index].y += y;
@@ -360,12 +352,13 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 			else if (lineColors.hueMax >= hue && hue >= lineColors.hueMin &&
 				lineColors.saturationMax >= saturation && saturation >= lineColors.saturationMin &&
 				lineColors.valueMax >= value && value >= lineColors.valueMin) {
-				for (int i = 0; i < 100; ++i) {
-					float angle = i * 2 * PI / 100;
-					float radiusIndex = (x*cosf(angle) + y*sinf(angle))/4;
-					if (radiusIndex > 0) {
-						houghTransformBuffer[(int)floorf(radiusIndex)+100*i]+=1;
-						houghTransformBuffer[(int)ceilf(radiusIndex) + 100 * i] += 1;
+				//wprintf(L"line x: %d, y: %d\n", x, y);
+				for (int i = 0; i < 150; ++i) {
+					float angle = i * 2 * PI / 150;
+					float radiusIndex = ((x-320)*cosf(angle) + (y-240)*sinf(angle))/4; //divide by 4 because the radius array is in steps of 4 pixels
+					if (radiusIndex >= 0 && radiusIndex < 150) {
+						houghTransformBuffer[(int)floorf(radiusIndex)+ 150 * i] += 1;
+						houghTransformBuffer[(int)ceilf(radiusIndex) + 150 * i] += 1;
 					}
 				}
 			}
@@ -374,7 +367,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 	//check if there are enough pixels in an object, get rid of the other ones and count the balls
 	ballCount = 0;
 	//printf("balls count before: %d\n", balls.count);
-	for (int i = 0; i < balls.count; ++i) {
+	for (int i = 0; i <= balls.count; ++i) {
 		if (balls.data[i].pixelcount >= 100) {
 			balls.data[ballCount] = balls.data[i];
 			balls.data[ballCount].x /= balls.data[ballCount].pixelcount;
@@ -389,7 +382,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 
 	//printf("herenow\n");
 	goalCount = 0;
-	for (int i = 0; i < goals.count; ++i) {
+	for (int i = 0; i <= goals.count; ++i) {
 		if (goals.data[i].pixelcount >= 100) {
 			goals.data[goalCount] = goals.data[i];
 			goals.data[goalCount].x /= goals.data[goalCount].pixelcount;
@@ -403,13 +396,43 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 	//printf("herenow2\n");
 
 	//get the lines from the Hough transform accumulator
-	for (int r = 0; r < 100; ++r) {
-		for (int angle = 0; angle < 100; ++angle) {
-			if (houghTransformBuffer[r + 100 * angle]/2.0f > 40) {
-				
+	for (int angle = 0; angle < 150; ++angle) {
+		for (int r = 0; r < 150; ++r) {
+			int current = houghTransformBuffer[r + 150 * angle] / 2;
+			int left = r > 0 ? houghTransformBuffer[r - 1 + 150 * angle] / 2 : 0;
+			int up = angle < 150-1 ? houghTransformBuffer[r + 150 * (angle + 1)] / 2 : 0;
+			int right = r < 150-1 ? houghTransformBuffer[r + 1 + 150 * angle] / 2 : 0;
+			int down = angle > 0 ? houghTransformBuffer[r + 150 * (angle - 1)] / 2 : 0;
+			if (current > 100 && current >= left && current >= down && current > right && current > up) {
+				lines.data[lines.count].radius = 4*r;
+				lines.data[lines.count].angle = angle*2*PI/150;
+				lines.data[lines.count].pixelcount = current;
+				lines.count++;
+				if (lines.count == lines.size)
+					doubleObjectBufferSize((objectCollection*)&lines);
+				//wprintf(L"current: %d, pixelcount: %d\n", current, lines.data[lines.count - 1].pixelcount);
 			}
 		}
 	}
+
+	//send the data to the other thread
+	WaitForSingleObject(writeMutex, INFINITE);
+	while (balls.count >= ballsShare.size)
+		doubleObjectBufferSize(&ballsShare);
+	ballsShare.count = balls.count;
+	CopyMemory(ballsShare.data, balls.data, balls.count*sizeof(objectInfo));
+
+	while (goals.count >= goalsShare.size)
+		doubleObjectBufferSize(&goalsShare);
+	goalsShare.count = goals.count;
+	CopyMemory(goalsShare.data, goals.data, goals.count*sizeof(objectInfo));
+
+	while (lines.count >= linesShare.size)
+		doubleObjectBufferSize((objectCollection*)&linesShare);
+	linesShare.count = lines.count;
+	CopyMemory(linesShare.data, lines.data, lines.count*sizeof(lineInfo));
+	ReleaseMutex(writeMutex);
+	SetEvent(newImageAnalyzed);
 }
 
 //draws a cross of the color #0xAABBGGRR to coordinates x, y starting from the bottom left corner (Windows bitmap uses that)
@@ -425,15 +448,24 @@ void drawCross(int x, int y, int color, BYTE* buffer) {
 				pixBuffer[x + j + 640 * (y + i)] = color;
 }
 
-void drawLine(int angle, int radius) {
-	//x*cos+y*sin=r
+void drawLine(float angle, int radius, int color, BYTE* buffer) {
+	//x*cos+y*sin=r is the equation for the points x,y
+	DWORD *pixBuffer = (DWORD *)buffer;
 	float sin = sinf(angle);
 	float cos = cosf(angle);
-	if (sin < 1.0 / 1000 && sin > -1.0 / 1000) {
-		
+	if (sin < 1/1.41 && sin > -1/1.41) { //if the line is more vertical than horizontal
+		for (int y = 0; y < 480; ++y) {
+			int x = int(((float)radius - (float)(y - 240)*sin) / cos) + 320;
+			if(x < 640 && x >= 0)
+				pixBuffer[y * 640 + x] = color;
+		}
 	}
-	for (int x = -320; x < 320; ++x) {
-		int y = (radius - x*cos) / sin;
+	else{
+		for (int x = 0; x < 640; ++x) {
+			int y = int(((float)radius - (float)(x - 320)*cos) / sin) + 240;
+			if(y < 480 && y >= 0)
+				pixBuffer[y * 640 + x] = color;
+		}
 	}
 }
 
@@ -504,6 +536,11 @@ public:
 			for (int i = 0; i < goals.count; ++i) {
 				drawCross(goals.data[i].x, goals.data[i].y, 0x0, g_pBuffer);
 			}
+			for (int i = 0; i < lines.count; ++i) {
+				drawLine(lines.data[i].angle, lines.data[i].radius, 0x000000FF, g_pBuffer);
+			}
+			drawCross(320, 240, 0, g_pBuffer);
+			//drawLine(4, 52, 0x000000FF, g_pBuffer);
 			SetEvent(newImageAnalyzed);
 			GdiFlush();
 			//printf("\nBufferCB %ld %ld\n\n", BufferLen, pBuffer);
@@ -523,24 +560,16 @@ const wchar_t CLASS_NAME[] = L"Main Window Class";
 
 void analyzeTest() {
 	DWORD *pixels = (DWORD*) HeapAlloc(GetProcessHeap(), NULL, 640 * 480 * 4);
-	ballColors.hueMin = 0, ballColors.hueMax = 6;
-	ballColors.saturationMin = 0, ballColors.saturationMax = 1;
-	ballColors.valueMin = 0.5, ballColors.valueMax = 1;
+	DWORD color = HSVtoRGB((lineColors.hueMin + lineColors.hueMax) / 2, 
+		(lineColors.saturationMin + lineColors.saturationMax) / 2,
+		(lineColors.valueMin + lineColors.valueMax) / 2);
 
-	for (int y = 0; y < 480;++y) {
-		for (int x = 0; x < 640;++x) {
-			if (150 <= x && x <= 250 && 50 <= y && y <= 200) { 
-				pixels[x + 640 * y] = 0xFFFFFF;
-			}
-			else if (50 <= x && x <= 200 && 200 <= y && y <= 300) {
-				pixels[x + 640 * y] = 0xFFFFFF;
-			}
-			else {
-				pixels[x + 640 * y] = 0;
-			}
-		}
-	}
+	drawLine(7, 560, color, (BYTE*)pixels);
 	analyzeImage(0, (BYTE*)pixels, 640 * 480 * 4);
+	for (int i = 0; i < lines.count; ++i) {
+		wprintf(L"line: %d, radius = %d, angle = %.2f, pixelcount = %d\n", i + 1, lines.data[i].radius, 
+			lines.data[i].angle, lines.data[i].pixelcount);
+	}
 	HeapFree(GetProcessHeap(), NULL, pixels);
 }
 
@@ -553,12 +582,20 @@ DWORD WINAPI GUICamera(LPVOID lpParameter)
 	balls.size = 128, balls.count = 0;
 	goals.data = (objectInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(objectInfo) * 128);
 	goals.size = 128, goals.count = 0;
+	lines.data = (lineInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(lineInfo) * 128);
+	lines.size = 128, lines.count = 0;
+	ballsShare.data = (objectInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(objectInfo) * 128);
+	ballsShare.size = 128, ballsShare.count = 0;
+	goalsShare.data = (objectInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(objectInfo) * 128);
+	goalsShare.size = 128, goalsShare.count = 0;
+	linesShare.data = (lineInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(lineInfo) * 128);
+	linesShare.size = 128, linesShare.count = 0;
 	pBufferCopy = (DWORD*)HeapAlloc(GetProcessHeap(), NULL, 640*480*4);
-	houghTransformBuffer = (DWORD*)HeapAlloc(GetProcessHeap(), NULL, 100 * 100 * 4);
+	houghTransformBuffer = (DWORD*)HeapAlloc(GetProcessHeap(), NULL, 150 * 150 * 4);
 	activeColors = &ballColors;
 
 	//analyzeTest();
-	//ExitProcess(0);
+	//Sleep(-1);
 
 	//make main window
 	
@@ -751,6 +788,11 @@ void setSlidersToValues(colorValues *colors) { //when the object or the slider v
 	SendMessage(hwndHue, TBM_SETPOS, TRUE, (int)(colors->hue * 1000 / 6));
 	SendMessage(hwndSaturation, TBM_SETPOS, TRUE, (int)(colors->saturation * 1000));
 	SendMessage(hwndValue, TBM_SETPOS, TRUE, (int)(colors->value * 1000));
+
+	RECT rc{ 120,270,280,350 };
+	InvalidateRect(hwndCalibrate, &rc, FALSE); //redraw the rectangle with the current color
+	rc = { 0,0,150,180 };
+	InvalidateRect(hwndCalibrate, &rc, FALSE); //redraw the text area, where the current values are displayed
 }
 
 //the window process for the calibrator window
@@ -1041,6 +1083,8 @@ void InitVideo(HWND hwnd) {
 	hr = pSysDevEnum->CreateClassEnumerator(CLSID_VideoInputDeviceCategory, &pEnumCat, 0);
 	IBaseFilter *pCap = NULL;
 
+	prints(L"Camera list:\n");
+	BSTR chosen = SysAllocString(L""); //string of the chosen camera
 	if (hr == S_OK)
 	{
 		// Enumerate the monikers.
@@ -1057,7 +1101,7 @@ void InitVideo(HWND hwnd) {
 				VARIANT varName;
 				VariantInit(&varName);
 				hr = pPropBag->Read(L"FriendlyName", &varName, 0);
-				prints(varName.bstrVal);
+				prints(L"%s\n",varName.bstrVal);
 				if (SUCCEEDED(hr))
 				{
 					// Add the filter if the name is appropriate.
@@ -1069,6 +1113,7 @@ void InitVideo(HWND hwnd) {
 						if (SUCCEEDED(hr))
 						{
 							hr = pGraph->AddFilter(pCap, L"Capture Filter");
+							chosen = varName.bstrVal;
 							pMoniker->Release();
 							break;
 						}
@@ -1090,6 +1135,7 @@ void InitVideo(HWND hwnd) {
 		pEnumCat->Release();
 	}
 	pSysDevEnum->Release();
+	prints(L"Chose %s\n", chosen);
 
 	//List media types and get the correct one to pmt
 	IEnumPins *pEnum = NULL;
@@ -1185,10 +1231,11 @@ void InitVideo(HWND hwnd) {
 }
 
 void Release() {
+	pControl->Stop();
 	pGraph->Release();
-	DeleteObject(hBitmap);
 	pEventSink->Release();
 	pEvent->Release();
+	DeleteObject(hBitmap);
 	CoUninitialize();
 }
 
@@ -1370,3 +1417,11 @@ void doubleObjectBufferSize(objectCollection* objects) {
 	HeapFree(GetProcessHeap(), NULL, (objects->data));
 	objects->data = buffer;
 }
+
+//void doubleLineBufferSize(lineCollection* objects) {
+//	lineInfo* buffer = (lineInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(lineInfo) * 2 * objects->size);
+//	CopyMemory(buffer, objects->data, (objects->size)*sizeof(lineInfo));
+//	objects->size *= 2;
+//	HeapFree(GetProcessHeap(), NULL, (objects->data));
+//	objects->data = buffer;
+//}

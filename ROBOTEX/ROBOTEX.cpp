@@ -13,10 +13,19 @@ HANDLE hCOM1;
 HANDLE hCOM2;
 HANDLE hCOM3;
 HANDLE hCOM4;
-
+extern objectCollection ballsShare, goalsShare;
+extern HANDLE writeMutex;
 void sendString(HANDLE hComm, char* outputBuffer);
 void receiveString(HANDLE hComm, char* outputBuffer);
 void initCOMPorts();
+void setSpeed(float speed, float angle, float angularVelocity);
+void testSingleBallTrack();
+
+struct vector {
+	float e1;
+	float e2;
+	float e3;
+};
 
 int main() {
 	//Create the GUI in a separate thread
@@ -27,6 +36,8 @@ int main() {
 	//initialize the COM ports of the connected engine plates
 	initCOMPorts();
 
+	//testSingleBallTrack();
+
 	//TODO control the robot...
 	prints(L"Testing printing\n");
 
@@ -34,12 +45,83 @@ int main() {
 	WaitForSingleObject(GUIThread, INFINITE);
 }
 
+//calculates the direction of the robot modulo 90 degrees. For this it determines the orientation with respect to the field lines.
+float calculateDirection(lineInfo line) {
+	int r = line.radius;
+	float angle = line.angle;
+	
+	float height = 25 / 100; //height in meters
+	float cameraAngle = 10 * PI / 180; //the angle that the camera is down with respect to the horizontal
+	float angleOfView = 30 * PI / 180; //the horizontal angle of view
+	
+	//x, y, z are the coordinates on the floor, x axis straight ahead, y axis to the left
+	vector eCameraNormal = { cosf(cameraAngle), 0, -sinf(cameraAngle) };	//basis vector in the direction the camera is pointing
+	vector ex = { 0, -1, 0 };		//basis vector in the x direction of the camera image where the pixel x coordinate increases, so called image basis
+	vector ey = { sinf(cameraAngle), 0, cosf(cameraAngle) };	//basis vector in the y direction of the camera image where the pixel y coordinate increases
+
+	//a vector to a point on the line and a vector along the line in the basis ex, ey, eCameraNormal
+	vector vLinePoint = { r*cosf(angle) / 320 * tanf(angleOfView / 2), r*sinf(angle) / 320 * tanf(angleOfView / 2), 1 };
+	vector alongTheLine = { sinf(angle), -cosf(angle), 0 };
+	//normal vector to the plane that contains the viewer and the line in that same basis, calculated using vector product
+	vector planeNormal = { vLinePoint.e2 * alongTheLine.e3 - vLinePoint.e3 * alongTheLine.e2, 
+		vLinePoint.e3 * alongTheLine.e1 - vLinePoint.e1 * alongTheLine.e3,
+		vLinePoint.e1 * alongTheLine.e2 - vLinePoint.e2 * alongTheLine.e1 };
+	//the same normal vector in the floor xyz coordinates:
+	vector planeNormalFloor = { planeNormal.e1 * ex.e1 + planeNormal.e2 * ey.e1 + planeNormal.e3 * eCameraNormal.e1,
+								planeNormal.e1 * ex.e2 + planeNormal.e2 * ey.e2 + planeNormal.e3 * eCameraNormal.e2, 
+								planeNormal.e1 * ex.e3 + planeNormal.e2 * ey.e3 + planeNormal.e3 * eCameraNormal.e3 };
+	vector lineTangentLeftToRight = {};
+	float x, y;
+	if (planeNormalFloor.e2 >= 0) {
+		x = planeNormalFloor.e2, y = -planeNormalFloor.e1;
+	}
+	else {
+		x = -planeNormalFloor.e2, y = planeNormalFloor.e1;
+	}
+	if(x * 10000 < (y < 0 ? -y : y)){
+		angle = PI / 2;
+	}
+	else {
+		angle = atanf(y / x);
+	}
+	return angle;
+}
+
+void testSingleBallTrack() {
+	int currentx, currenty;
+	while (WaitForSingleObject(newImageAnalyzed, 0) == WAIT_OBJECT_0); //wait for the first image to come
+	currentx = ballsShare.data[0].x, currenty = ballsShare.data[0].y;
+	while (true) {
+		if (ballsShare.count == 0) {
+			setSpeed(0, 0, -3);
+			Sleep(50);
+		}
+		else if(currentx-320 > 60){
+			setSpeed(0, 0, -3);
+			Sleep(50);
+		}
+		else if (currentx - 320 < 60) {
+			setSpeed(0, 0, 3);
+			Sleep(50);
+		}
+		else {
+			setSpeed(3, 0, 0);
+			Sleep(50);
+		}
+		if (WaitForSingleObject(newImageAnalyzed, 0) == WAIT_OBJECT_0) {
+			WaitForSingleObject(writeMutex, INFINITE);
+			currentx = ballsShare.data[0].x, currenty = ballsShare.data[0].y;
+			ReleaseMutex(writeMutex);
+		}
+	}
+}
+
 //initializes the COM ports to the right handles
 void initCOMPorts() {
 	//read all the COM ports from the registry
 	HKEY hKey;
 	if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"HARDWARE\\DEVICEMAP\\SERIALCOMM", NULL, KEY_READ, &hKey) != ERROR_SUCCESS) {
-		prints(L"REGISTRY COM PORT LIST READING ERROR");
+		prints(L"REGISTRY COM PORT LIST READING ERROR\n");
 		return;
 	}
 	wchar_t valueName[64] = {};
@@ -93,6 +175,7 @@ void setEngineRotation(HANDLE hComm, int speed) {
 }
 
 //sets the robot speed to specific values, wheels go 1-2-3-4 from front left to back right
+//x axis is straight ahead, y axis is to the left
 //in units m, s, degrees, positive angle turns left
 void setSpeed(float speed, float angle, float angularVelocity) {
 	float wheelRadius = 3 / 100; //in meters
