@@ -8,12 +8,12 @@
 #define OBJECTINDEX(x) ((x)&0x7FFFFFFF)	//first 31 bits, gives the index of the current ball or goal
 #define BALLORGOAL(x) (((x)>>31)&1)	//32rd bit, the identifier for whether the pixel represents a ball or a goal
 #define BIT32 (1<<31)
-#define HUE(red,green,blue) ((red >= green && green >= blue && red > blue) ?	hue = ((float)(green - blue) / (red - blue)) :\
-			(green > red && red >= blue) ?	hue = (2 - (float)(red - blue) / (green - blue)):\
-			(green >= blue && blue > red) ?	hue = (2 + (float)(blue - red) / (green - red)):\
-			(blue > green && green > red) ?	hue = (4 - (float)(green - red) / (blue - red)):\
-			(blue > red && red >= green) ?	hue = (4 + (float)(red - green) / (blue - green)):\
-			(red >= blue && blue > green) ?	hue = (6 - (float)(blue - green) / (red - green)):\
+#define HUE(red,green,blue) ((red >= green && green >= blue) ?	((float)(green - blue) / (red - blue)) :\
+			(green > red && red >= blue) ?	(2 - (float)(red - blue) / (green - blue)):\
+			(green >= blue && blue > red) ?	(2 + (float)(blue - red) / (green - red)):\
+			(blue > green && green > red) ?	(4 - (float)(green - red) / (blue - red)):\
+			(blue > red && red >= green) ?	(4 + (float)(red - green) / (blue - green)):\
+			(red >= blue && blue > green) ?	(6 - (float)(blue - green) / (red - green)):\
 			0.0f) //Hue when the image is gray red=green=blue
 #define SATURATION(red,green,blue) ((float)(MAX3(red, green, blue) - MIN3(red, green, blue)) / \
 									MAX3(red, green, blue))
@@ -56,6 +56,7 @@ HRESULT hr;
 BYTE *g_pBuffer = NULL; //buffer of the image displayed on the right side of the screen
 DWORD *pBufferCopy;		//temporary buffer used by the image analysis function, tags pixels by object index
 DWORD *houghTransformBuffer;	//buffer for the values of the Hough transform, x axis is radius, y is angle in radians
+BYTE *DShowBuffer; //the buffer that the dshow displays on the screen
 BOOL start = TRUE;
 
 //headers for the bitmap, used if you want to write an image to a file or create a bitmap for displaying
@@ -79,11 +80,15 @@ HWND minRadioButton;
 HWND maxRadioButton;
 
 BOOLEAN calibrating = FALSE;	//state variable
-BOOLEAN whitenThresholdPixels;
+BOOLEAN whitenThresholdPixels;	//whether to make the selected pixels white during calibration
+drivingState currentDrivingState;	//current driving speed valuse
 
 //signals for communicating between threads
 extern HANDLE readySignal;
 extern HANDLE newImageAnalyzed;
+extern HANDLE startSignal;
+extern HANDLE stopSignal;
+extern HANDLE calibratingSignal;
 HANDLE writeMutex = CreateMutex(NULL, FALSE, NULL);
 
 enum {
@@ -168,8 +173,8 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 	lines.count = 0;
 	for (int y = 0; y < 480; ++y) {
 		for (int x = 0; x < 640; ++x) {
-			int red = (pixBuffer[x + y * 640]) & 0xFF, green = (pixBuffer[x + y * 640] >> 8) & 0xFF,
-				blue = (pixBuffer[x + y * 640] >> 16) & 0xFF;
+			int blue = (pixBuffer[x + y * 640]) & 0xFF, green = (pixBuffer[x + y * 640] >> 8) & 0xFF,
+				red = (pixBuffer[x + y * 640] >> 16) & 0xFF;
 
 			float hue = HUE(red, green, blue);
 			float saturation = SATURATION(red, green, blue);
@@ -177,7 +182,6 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 
 			//now the HSV values are calculated and we can check if they fit the proper criteria
 			//we will check if the color values fit the color range of balls, goals or lines
-
 			//if it is a ball pixel
 			if (ballColors.hueMax >= hue && hue >= ballColors.hueMin &&
 				ballColors.saturationMax >= saturation && saturation >= ballColors.saturationMin &&
@@ -207,8 +211,8 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 					//change all the pixels forward in the line to the object index,
 					//merge the objects if it meets another ball
 					for (++x; x < 640; ++x) {
-						int red = (pixBuffer[x + y * 640]) & 0xFF, green = (pixBuffer[x + y * 640] >> 8) & 0xFF,
-							blue = (pixBuffer[x + y * 640] >> 16) & 0xFF;
+						int blue = (pixBuffer[x + y * 640]) & 0xFF, green = (pixBuffer[x + y * 640] >> 8) & 0xFF,
+							red = (pixBuffer[x + y * 640] >> 16) & 0xFF;
 						float hue = HUE(red, green, blue);
 						float saturation = SATURATION(red, green, blue);
 						float value = VALUE(red, green, blue);
@@ -224,6 +228,8 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 						balls.data[index].y += y;
 						pBufferCopy[x + 640 * y] = index;
 						int index2 = OBJECTINDEX(pBufferCopy[x + (y - 1) * 640]);
+						if (y == 120)
+							prints(L"5: x %d y %d\n", x, y);
 						//there are objects with different indexes on the current pixel and below it
 						if (!BALLORGOAL(pBufferCopy[x + (y-1) * 640]) && 
 							index2 && index2 != index) {
@@ -292,8 +298,8 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 					//change all the pixels forward in the line to the object index,
 					//merge the objects if it meets another ball
 					for (++x; x < 640; ++x) {
-						int red = (pixBuffer[x + y * 640]) & 0xFF, green = (pixBuffer[x + y * 640] >> 8) & 0xFF,
-							blue = (pixBuffer[x + y * 640] >> 16) & 0xFF;
+						int blue = (pixBuffer[x + y * 640]) & 0xFF, green = (pixBuffer[x + y * 640] >> 8) & 0xFF,
+							red = (pixBuffer[x + y * 640] >> 16) & 0xFF;
 						float hue = HUE(red, green, blue);
 						float saturation = SATURATION(red, green, blue);
 						float value = VALUE(red, green, blue);
@@ -469,6 +475,20 @@ void drawLine(float angle, int radius, int color, BYTE* buffer) {
 	}
 }
 
+//because the cameras on the robot are upside down
+void reverse(BYTE* buffer) {
+	DWORD pixel;
+	DWORD* pixBuffer = (DWORD*)buffer;
+	for (int y = 0; y < 480/2; ++y) {
+		for (int x = 0; x < 640; ++x) {
+			pixel = pixBuffer[x + 640 * y];
+			pixBuffer[x + 640 * y] = pixBuffer[640 - 1 - x + 640 * (480 - 1 - y)];
+			pixBuffer[640 - 1 - x + 640 * (480 - 1 - y)] = pixel;
+		}
+	}
+
+}
+
 //this is the class that is needed for grabbing frames, the method BufferCB gets called everytime
 //there is a new frame ready with a pointer to the data
 class SampleGrabberCallback : public ISampleGrabberCB
@@ -503,13 +523,15 @@ public:
 	//this method receives the buffer from Windows DirectShow every time a new frame has arrived
 	STDMETHODIMP BufferCB(double Time, BYTE *pBuffer, long BufferLen)
 	{
+		reverse(pBuffer); //because the cameras on the robot are upside down
+		DShowBuffer = pBuffer;
 		//if the calibrator is open, black out the pixels that aren't in the range of the current selection
 		//in the calibrator window
 		if (calibrating && g_pBuffer != NULL) {
 			CopyMemory(g_pBuffer, pBuffer, BufferLen);
 			for (DWORD *pixBuffer = (DWORD*)g_pBuffer; pixBuffer < (DWORD*)g_pBuffer + BufferLen/4; ++pixBuffer) {
 				DWORD pixel = *pixBuffer;
-				BYTE red = pixel & 0xFF, green = (pixel >> 8) & 0xFF, blue = (pixel >> 16) & 0xFF;
+				BYTE blue = pixel & 0xFF, green = (pixel >> 8) & 0xFF, red = (pixel >> 16) & 0xFF;
 				
 				float hue = HUE(red, green, blue);
 				float saturation = SATURATION(red,green,blue);
@@ -539,7 +561,6 @@ public:
 			for (int i = 0; i < lines.count; ++i) {
 				drawLine(lines.data[i].angle, lines.data[i].radius, 0x000000FF, g_pBuffer);
 			}
-			drawCross(320, 240, 0, g_pBuffer);
 			//drawLine(4, 52, 0x000000FF, g_pBuffer);
 			SetEvent(newImageAnalyzed);
 			GdiFlush();
@@ -685,9 +706,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 			0, 480, 640 + 640, 200, hwnd, (HMENU)ID_EDITCHILD, hInstance, NULL);
 
 		//buttons in the upper right
-		HWND button1 = CreateWindowEx(0, L"BUTTON", L"N_IMG",
+		HWND button1 = CreateWindowEx(0, L"BUTTON", L"START",
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 0, 65, 20, hwnd, (HMENU)ID_BUTTON1, hInstance, NULL);
-		HWND button2 = CreateWindowEx(0, L"BUTTON", L"PROC",
+		HWND button2 = CreateWindowEx(0, L"BUTTON", L"STOP",
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 20, 65, 20, hwnd, (HMENU)ID_BUTTON2, hInstance, NULL);
 		HWND button3 = CreateWindowEx(0, L"BUTTON", L"CALIB",
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 40, 65, 20, hwnd, (HMENU)ID_BUTTON3, hInstance, NULL);
@@ -706,6 +727,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	case WM_SIZE:
 		return 0;
 	case WM_DESTROY:
+		setSpeed(0, 0, 0);
 		ShowWindow(hwndCalibrate, SW_HIDE);
 		Release();
 		PostQuitMessage(0);
@@ -713,14 +735,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
 		case ID_BUTTON1:
-			prints(L"New Image clicked\n");
+			SetEvent(startSignal);
 			return 0;
 		case ID_BUTTON2:
-			prints(L"Button 2 clicked\n");
+			SetEvent(stopSignal);
 			return 0;
 		case ID_BUTTON3:
 			ShowWindow(hwndCalibrate, SW_SHOW);
 			calibrating = TRUE;
+			SetEvent(calibratingSignal);
 			return 0;
 		}
 		break;
@@ -748,7 +771,7 @@ void OnPaint(HWND hwnd) {
 	DeleteDC(hdcMem);
 	DeleteObject(hbmOld);
 
-	pDisplay->RepaintVideo();
+	//pDisplay->RepaintVideo();
 
 	EndPaint(hwnd, &ps);
 }
@@ -893,10 +916,12 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 	case WM_DESTROY:
 		ShowWindow(hwnd, SW_HIDE);
 		calibrating = FALSE;
+		ResetEvent(calibratingSignal);
 		return 0;
 	case WM_CLOSE:
 		ShowWindow(hwnd, SW_HIDE);
 		calibrating = FALSE;
+		ResetEvent(calibratingSignal);
 		return 0;
 	case WM_COMMAND: //if a button is pressed
 		switch (LOWORD(wParam)) {
@@ -1003,6 +1028,54 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 			//	activeColors->hueMin, activeColors->hueMax, activeColors->saturationMin, 
 			//	activeColors->saturationMax, activeColors->valueMin, activeColors->valueMax);
 		}
+	case WM_KEYDOWN: //drive the robot when the calibrating window is open and arrow keys are pressed
+		switch (wParam) {
+		case VK_UP:
+			currentDrivingState.speed = 0.3;
+			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			return 0;
+		case VK_DOWN:
+			currentDrivingState.speed = -0.3;
+			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			return 0;
+		case VK_LEFT:
+			currentDrivingState.angularVelocity = 60;
+			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			return 0;
+		case VK_RIGHT:
+			currentDrivingState.angularVelocity = -60;
+			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			return 0;
+		}
+	case WM_KEYUP:
+		switch (wParam) {
+		case VK_UP:
+			currentDrivingState.speed = 0;
+			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			break;
+		case VK_DOWN:
+			currentDrivingState.speed = 0;
+			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			break;
+		case VK_LEFT:
+			currentDrivingState.angularVelocity = 0;
+			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			break;
+		case VK_RIGHT:
+			currentDrivingState.angularVelocity = 0;
+			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			break;
+		}
+		break;
+	case WM_LBUTTONDOWN: //switch the min-max mode of the calibration when the mouse is clicked on the window
+		SetFocus(hwndCalibrate);
+		if (currentCalibratorSetting == minimum) {
+			SendMessage(hwndCalibrate, WM_COMMAND, ID_RADIOBOX_MAX, 0);
+		}
+		else {
+			SendMessage(hwndCalibrate, WM_COMMAND, ID_RADIOBOX_MIN, 0);
+		}
+		break;
 	}
 	return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
@@ -1029,7 +1102,8 @@ void OnPaintCalibrator(HWND hwnd) {
 
 	//HRGN hrgn = CreateRectRgn(120, 250, 280, 330);
 	//SelectClipRgn(hdc, hrgn);
-	HBRUSH rectBrush = CreateSolidBrush(HSVtoRGB(activeColors->hue, activeColors->saturation, activeColors->value));
+	DWORD color = HSVtoRGB(activeColors->hue, activeColors->saturation, activeColors->value);
+	HBRUSH rectBrush = CreateSolidBrush( (color>>16)&0xFF | (color)&0xFF00 | (color<<16)&0xFF0000 );
 	FillRect( hdc, &rc2, rectBrush );
 	DeleteObject(rectBrush);
 
@@ -1043,14 +1117,27 @@ LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 		SetWindowPos(hwnd, NULL, 0, 0, 640, 480, SWP_NOZORDER);
 		prints(L"Initializing camera\n");
 		InitVideo(hwnd);
-		prints(L"Camera initialized\n");
+		prints(L"Camera initialized\r\n\r\n");
 		return 0;
 	case WM_PAINT:
 		pDisplay->RepaintVideo();
-		return 0;
+		break;
 	case WM_GRAPH_EVENT:
 		OnGraphEvent(hwnd);
 		return 0;
+	case WM_LBUTTONDOWN:
+		if (calibrating) {
+			POINTS click = MAKEPOINTS(lParam);
+			int x = click.x;
+
+			int y = 480 - click.y;
+			prints(L"x: %d, y: %d\n", x, y);
+
+			int colors = ((DWORD*)DShowBuffer)[x + y * 640];
+			int blue = (colors & 0xFF),  green = (colors & 0xFF00)>>8, red = (colors & 0xFF0000) >> 16;
+			prints(L"red %d green %d blue %d\n", red, green, blue);
+		}
+		break;
 	}
 	return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
@@ -1085,6 +1172,7 @@ void InitVideo(HWND hwnd) {
 
 	prints(L"Camera list:\n");
 	BSTR chosen = SysAllocString(L""); //string of the chosen camera
+	int chose = 0;
 	if (hr == S_OK)
 	{
 		// Enumerate the monikers.
@@ -1108,17 +1196,19 @@ void InitVideo(HWND hwnd) {
 					if (wcscmp(varName.bstrVal, L"HD Pro Webcam C920") == 0 || 
 						wcscmp(varName.bstrVal, L"Philips SPC 900NC PC Camera") == 0 ||
 						wcscmp(varName.bstrVal, L"Integrated Webcam") == 0 || 1) {
-						VariantClear(&varName);
-						hr = pMoniker->BindToObject(0, 0, IID_IBaseFilter, (void**)&pCap);
-						if (SUCCEEDED(hr))
-						{
-							hr = pGraph->AddFilter(pCap, L"Capture Filter");
-							chosen = varName.bstrVal;
-							pMoniker->Release();
-							break;
-						}
-						else {
-							prints(L"camera error");
+						if (!chose) {
+							VariantClear(&varName);
+							hr = pMoniker->BindToObject(0, 0, IID_IBaseFilter, (void**)&pCap);
+							if (SUCCEEDED(hr))
+							{
+								hr = pGraph->AddFilter(pCap, L"Capture Filter");
+								chosen = varName.bstrVal;
+								pMoniker->Release();
+								chose = 1;
+							}
+							else {
+								prints(L"camera error");
+							}
 						}
 					}
 					else {
@@ -1148,14 +1238,21 @@ void InitVideo(HWND hwnd) {
 	VIDEOINFOHEADER* videoInfoHeader = NULL;
 	while (hr = ppEnum->Next(1, &pmt, NULL), hr == 0) {
 		videoInfoHeader = (VIDEOINFOHEADER*)pmt->pbFormat;
-		//        printf("Width: %d, Height: %d, BitCount: %d, Compression: %X\n",
-		//               videoInfoHeader->bmiHeader.biWidth,videoInfoHeader->bmiHeader.biHeight,
-		//               videoInfoHeader->bmiHeader.biBitCount,videoInfoHeader->bmiHeader.biCompression);
-		//        printf("Image size: %d, Bitrate KB: %.2f, FPS: %.2f\n",
-		//               videoInfoHeader->bmiHeader.biSizeImage,videoInfoHeader->dwBitRate/(8.0*1000),
-		//               10000000.0/(videoInfoHeader->AvgTimePerFrame));
+		        printf("Width: %d, Height: %d, BitCount: %d, Compression: %X\n",
+		               videoInfoHeader->bmiHeader.biWidth,videoInfoHeader->bmiHeader.biHeight,
+		               videoInfoHeader->bmiHeader.biBitCount,videoInfoHeader->bmiHeader.biCompression);
+		        printf("Image size: %d, Bitrate KB: %.2f, FPS: %.2f\n",
+		               videoInfoHeader->bmiHeader.biSizeImage,videoInfoHeader->dwBitRate/(8.0*1000),
+		               10000000.0/(videoInfoHeader->AvgTimePerFrame));
 		if (videoInfoHeader->bmiHeader.biWidth == 640 &&
-			videoInfoHeader->bmiHeader.biBitCount == 16) {
+			videoInfoHeader->bmiHeader.biBitCount >= 16) {
+			prints(L"Chosen image format:\n");
+			prints(L"Width: %d, Height: %d, BitCount: %d, Compression: %X\n",
+				videoInfoHeader->bmiHeader.biWidth,videoInfoHeader->bmiHeader.biHeight,
+			    videoInfoHeader->bmiHeader.biBitCount,videoInfoHeader->bmiHeader.biCompression);
+			prints(L"Image size: %d, Bitrate KB: %.2f, FPS: %.2f\n",
+				videoInfoHeader->bmiHeader.biSizeImage,videoInfoHeader->dwBitRate/(8.0*1000),
+				10000000.0/(videoInfoHeader->AvgTimePerFrame));
 			break;
 		}
 	}
@@ -1305,7 +1402,7 @@ void CALLBACK OnGraphEvent(HWND hwnd)
 		case EC_COMPLETE:
 		case EC_USERABORT:
 		case EC_ERRORABORT:
-			printf("GRAPH EVENT ERROR");
+			prints(L"GRAPH EVENT ERROR\n");
 			PostQuitMessage(1);
 			Release();
 			break;
@@ -1380,7 +1477,7 @@ DWORD HSVtoRGB(float hue, float saturation, float value) {
 		blue = (hue*saturation*value + value*(1 - saturation)) * 255;
 		green = value*(1 - saturation) * 255;
 	}
-	return (int)red + ((int)green << 8) + ((int)blue << 16);
+	return (int)blue + ((int)green << 8) + ((int)red << 16);
 }
 
 void saveToFileColorThresholds() {

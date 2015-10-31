@@ -1,22 +1,39 @@
-// Camera test.cpp : Defines the entry point for the console application.
-//
-
 #include "stdafx.h"
 #include "qedit.h"
 
-const wchar_t CLASS_NAME[] = L"Main Window Class";
-LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
-LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
-void InitVideo(HWND hwnd);
-HWND hwndMain = NULL;
-HWND hwndVideo = NULL;
-BITMAPINFOHEADER bmih;
-BITMAPINFO dbmi;
-AM_MEDIA_TYPE *g_pmt = (AM_MEDIA_TYPE*)new byte[100];
+//constants for events and ID-s of GUI elements
 #define WM_GRAPH_EVENT (WM_APP + 1)
 
-IMFVideoDisplayControl *pDisplay = NULL;
+//used for video media type to save the type and find the right one when initializing the camera
+AM_MEDIA_TYPE *g_pmt = (AM_MEDIA_TYPE*)new byte[100];
 
+//window procedures, used in standard Windows GUI programming
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+void OnPaint(HWND hwnd);
+
+void InitVideo(HWND hwnd);		//the main function that sets up the camera and the frame grabber
+
+//variables specific to the way the camera is set up, it's what Windows DirectShow uses
+IMediaControl *pControl = NULL;
+IMediaEventEx   *pEvent = NULL;
+IMediaEventSink   *pEventSink = NULL;
+IGraphBuilder *pGraph = NULL;
+ICaptureGraphBuilder2 *pBuild = NULL;
+IMFVideoDisplayControl *pDisplay = NULL;
+HRESULT hr;
+
+//headers for the bitmap, used if you want to write an image to a file or create a bitmap for displaying
+BITMAPINFOHEADER bmih;
+BITMAPINFO dbmi;
+HBITMAP hBitmap = NULL;
+
+//the handles for the GUI elements
+HWND hwndVideo = NULL;
+HWND hwndMain = NULL;
+
+//this is the class that is needed for grabbing frames, the method BufferCB gets called everytime
+//there is a new frame ready with a pointer to the data
 class SampleGrabberCallback : public ISampleGrabberCB
 {
 public:
@@ -46,19 +63,20 @@ public:
 		return E_NOTIMPL;
 	}
 
+	//this method receives the buffer from Windows DirectShow every time a new frame has arrived
 	STDMETHODIMP BufferCB(double Time, BYTE *pBuffer, long BufferLen)
 	{
-		//GdiFlush();
 		return S_OK;
 	}
 };
 
 SampleGrabberCallback g_GrabberCB;
 
+const wchar_t CLASS_NAME[] = L"Main Window Class";
 
 int main()
 {
-	printf("new version3\n");
+	
 	HINSTANCE hInstance = GetModuleHandle(NULL);
 	WNDCLASSEX wc = {};
 	wc.cbSize = sizeof(WNDCLASSEX);
@@ -71,7 +89,7 @@ int main()
 
 	RegisterClassEx(&wc);
 
-	hwndMain = CreateWindowEx(0, CLASS_NAME, L"ROBOPROG",
+	hwndMain = CreateWindowEx(0, CLASS_NAME, L"Lag Test",
 		WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
 		CW_USEDEFAULT, NULL, NULL, hInstance, NULL);
 
@@ -109,21 +127,22 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	{
 	case WM_CREATE:
 	{
+		//set the proper window position
 		RECT rc;
 		rc.left = 0, rc.top = 0, rc.right = 640 + 640 + 65, rc.bottom = 680;
 		AdjustWindowRectEx(&rc, GetWindowLong(hwnd, GWL_STYLE), FALSE, GetWindowLong(hwnd, GWL_EXSTYLE));
 		SetWindowPos(hwnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER);
+		//SendMessage(hwndEdit, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), 0);
 		return 0;
 	}
 	case WM_PAINT:
 		RECT rc{ 700,0,800,170 };
 		PAINTSTRUCT ps;
 		HDC hdc;
-		hdc = BeginPaint(hwnd, &ps);
-		FillRect(hdc, &rc, (HBRUSH)(COLOR_MENUBAR));
-		EndPaint(hwnd, &ps);
-		InvalidateRect(hwndVideo, &rc, FALSE);
-		return 0;
+		//hdc = BeginPaint(hwnd, &ps);
+		//FillRect(hdc, &rc, (HBRUSH)(COLOR_MENUBAR));
+		//EndPaint(hwnd, &ps);
+		break;
 	}
 	return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
@@ -207,11 +226,11 @@ void InitVideo(HWND hwnd) {
 				VARIANT varName;
 				VariantInit(&varName);
 				hr = pPropBag->Read(L"FriendlyName", &varName, 0);
-				wprintf(L"%s \n",varName.bstrVal);
+				wprintf(L"%s \n", varName.bstrVal);
 				if (SUCCEEDED(hr) && !cameraChosen)
 				{
 					// Add the filter if the name is appropriate.
-					if (wcscmp(varName.bstrVal, L"PS3Eye Camera") == 0 || 
+					if (wcscmp(varName.bstrVal, L"PS3Eye Camera") == 0 ||
 						wcscmp(varName.bstrVal, L"HD Pro Webcam C920") == 0 ||
 						wcscmp(varName.bstrVal, L"Philips SPC 900NC PC Camera") == 0 ||
 						wcscmp(varName.bstrVal, L"Integrated Webcam") == 0 || 1) {
@@ -252,14 +271,14 @@ void InitVideo(HWND hwnd) {
 	VIDEOINFOHEADER* videoInfoHeader = NULL;
 	while (hr = ppEnum->Next(1, &pmt, NULL), hr == 0) {
 		videoInfoHeader = (VIDEOINFOHEADER*)pmt->pbFormat;
-		        printf("Width: %d, Height: %d, BitCount: %d, Compression: %X\n",
-		               videoInfoHeader->bmiHeader.biWidth,videoInfoHeader->bmiHeader.biHeight,
-		               videoInfoHeader->bmiHeader.biBitCount,videoInfoHeader->bmiHeader.biCompression);
-		        printf("Image size: %d, Bitrate KB: %.2f, FPS: %.2f\n",
-		               videoInfoHeader->bmiHeader.biSizeImage,videoInfoHeader->dwBitRate/(8.0*1000),
-		               10000000.0/(videoInfoHeader->AvgTimePerFrame));
+		printf("Width: %d, Height: %d, BitCount: %d, Compression: %X\n",
+			videoInfoHeader->bmiHeader.biWidth, videoInfoHeader->bmiHeader.biHeight,
+			videoInfoHeader->bmiHeader.biBitCount, videoInfoHeader->bmiHeader.biCompression);
+		printf("Image size: %d, Bitrate KB: %.2f, FPS: %.2f\n",
+			videoInfoHeader->bmiHeader.biSizeImage, videoInfoHeader->dwBitRate / (8.0 * 1000),
+			10000000.0 / (videoInfoHeader->AvgTimePerFrame));
 		if (videoInfoHeader->bmiHeader.biWidth == 640 /*&&
-			videoInfoHeader->bmiHeader.biBitCount == 16*/) {
+													  videoInfoHeader->bmiHeader.biBitCount == 16*/) {
 			break;
 		}
 	}
@@ -311,7 +330,7 @@ void InitVideo(HWND hwnd) {
 	//this connects the three filters together and adds whatever else filters are necessary to get RGB32 for the grabber
 	hr = pBuild->RenderStream(&PIN_CATEGORY_PREVIEW, &MEDIATYPE_Video, pCap, pGrabberF, pEVR); //returns VFW_S_NOPREVIEWPIN
 
-	//store the media type and set up the bitmap headers, so that we can later create a bitmap
+																							   //store the media type and set up the bitmap headers, so that we can later create a bitmap
 	pGrabber->GetConnectedMediaType(g_pmt);
 	bmih = (((VIDEOINFOHEADER *)g_pmt->pbFormat)->bmiHeader);
 	ZeroMemory(&dbmi, sizeof(dbmi));

@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 14
-VisualStudioVersion = 14.0.22823.1
+VisualStudioVersion = 14.0.23107.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ROBOTEX", "ROBOTEX\ROBOTEX.vcxproj", "{C05599F9-147C-41CB-957C-864041148F65}"
 EndProject
@@ -9,24 +9,40 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NUC test", "Win32Project1\W
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Camera test", "Camera test\Camera test.vcxproj", "{9ACAC54F-4307-4FE5-8BB2-CE9FA9E7ED20}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Main plate", "Main plate\Main plate.vcxproj", "{FD412D90-4E85-4B98-90BE-3B9E44E536B6}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
 		Debug|x86 = Debug|x86
+		Release|x64 = Release|x64
 		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C05599F9-147C-41CB-957C-864041148F65}.Debug|x64.ActiveCfg = Debug|Win32
 		{C05599F9-147C-41CB-957C-864041148F65}.Debug|x86.ActiveCfg = Debug|Win32
 		{C05599F9-147C-41CB-957C-864041148F65}.Debug|x86.Build.0 = Debug|Win32
+		{C05599F9-147C-41CB-957C-864041148F65}.Release|x64.ActiveCfg = Release|Win32
 		{C05599F9-147C-41CB-957C-864041148F65}.Release|x86.ActiveCfg = Release|Win32
 		{C05599F9-147C-41CB-957C-864041148F65}.Release|x86.Build.0 = Release|Win32
+		{2736FD08-A730-4AC5-8FB3-951F1C8B4948}.Debug|x64.ActiveCfg = Debug|Win32
 		{2736FD08-A730-4AC5-8FB3-951F1C8B4948}.Debug|x86.ActiveCfg = Debug|Win32
 		{2736FD08-A730-4AC5-8FB3-951F1C8B4948}.Debug|x86.Build.0 = Debug|Win32
+		{2736FD08-A730-4AC5-8FB3-951F1C8B4948}.Release|x64.ActiveCfg = Release|Win32
 		{2736FD08-A730-4AC5-8FB3-951F1C8B4948}.Release|x86.ActiveCfg = Release|Win32
 		{2736FD08-A730-4AC5-8FB3-951F1C8B4948}.Release|x86.Build.0 = Release|Win32
+		{9ACAC54F-4307-4FE5-8BB2-CE9FA9E7ED20}.Debug|x64.ActiveCfg = Debug|Win32
 		{9ACAC54F-4307-4FE5-8BB2-CE9FA9E7ED20}.Debug|x86.ActiveCfg = Debug|Win32
 		{9ACAC54F-4307-4FE5-8BB2-CE9FA9E7ED20}.Debug|x86.Build.0 = Debug|Win32
+		{9ACAC54F-4307-4FE5-8BB2-CE9FA9E7ED20}.Release|x64.ActiveCfg = Release|Win32
 		{9ACAC54F-4307-4FE5-8BB2-CE9FA9E7ED20}.Release|x86.ActiveCfg = Release|Win32
-		{9ACAC54F-4307-4FE5-8BB2-CE9FA9E7ED20}.Release|x86.Build.0 = Release|Win32
+		{FD412D90-4E85-4B98-90BE-3B9E44E536B6}.Debug|x64.ActiveCfg = Debug|x64
+		{FD412D90-4E85-4B98-90BE-3B9E44E536B6}.Debug|x64.Build.0 = Debug|x64
+		{FD412D90-4E85-4B98-90BE-3B9E44E536B6}.Debug|x86.ActiveCfg = Debug|Win32
+		{FD412D90-4E85-4B98-90BE-3B9E44E536B6}.Debug|x86.Build.0 = Debug|Win32
+		{FD412D90-4E85-4B98-90BE-3B9E44E536B6}.Release|x64.ActiveCfg = Release|x64
+		{FD412D90-4E85-4B98-90BE-3B9E44E536B6}.Release|x64.Build.0 = Release|x64
+		{FD412D90-4E85-4B98-90BE-3B9E44E536B6}.Release|x86.ActiveCfg = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

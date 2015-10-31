@@ -5,21 +5,26 @@
 #define max3(r,g,b) ( r >= g ? (r >= b ? r : b) : (g >= b ? g : b) ) //max of three
 #define min3(r,g,b) ( r <= g ? (r <= b ? r : b) : (g <= b ? g : b) ) //min of three
 #define PI (3.1415927)
+#define SQRT2 (1.4142135)
 
 HANDLE readySignal = CreateEvent(NULL, FALSE, FALSE, NULL);
 HANDLE newImageAnalyzed = CreateEvent(NULL, FALSE,FALSE,NULL);
+HANDLE startSignal = CreateEventW(NULL, FALSE, FALSE, NULL);
+HANDLE stopSignal = CreateEventW(NULL, FALSE, FALSE, NULL);
+HANDLE calibratingSignal = CreateEventW(NULL, TRUE, FALSE, NULL);
 HANDLE GUIThread;
-HANDLE hCOM1;
-HANDLE hCOM2;
-HANDLE hCOM3;
-HANDLE hCOM4;
+HANDLE hCOMDongle;
+HANDLE hCOMRadio;
 extern objectCollection ballsShare, goalsShare;
 extern HANDLE writeMutex;
+extern BOOLEAN calibrating;
 void sendString(HANDLE hComm, char* outputBuffer);
-void receiveString(HANDLE hComm, char* outputBuffer);
-void initCOMPorts();
+int receiveString(HANDLE hComm, char* outputBuffer);
+void initCOMPort();
+void initUSBRadio();
 void setSpeed(float speed, float angle, float angularVelocity);
 void testSingleBallTrack();
+void test();
 
 struct vector {
 	float e1;
@@ -32,120 +37,144 @@ int main() {
 	GUIThread = CreateThread(NULL, 0, GUICamera, 0, 0, NULL);
 	//Wait for the GUI to initialize
 	WaitForSingleObject(readySignal, INFINITE);
+	prints(L"Testing printing\r\n\r\n");
+	
+	//initialize the radio
+	//initUSBRadio();
 
-	//initialize the COM ports of the connected engine plates
-	initCOMPorts();
+	//initialize the COM port of the dongle
+	initCOMPort();
 
 	//testSingleBallTrack();
 
+	test();
+
 	//TODO control the robot...
-	prints(L"Testing printing\n");
 
 	//Don't exit this thread before the GUI
 	WaitForSingleObject(GUIThread, INFINITE);
 }
 
-//calculates the direction of the robot modulo 90 degrees. For this it determines the orientation with respect to the field lines.
-float calculateDirection(lineInfo line) {
-	int r = line.radius;
-	float angle = line.angle;
-	
-	float height = 25 / 100; //height in meters
-	float cameraAngle = 10 * PI / 180; //the angle that the camera is down with respect to the horizontal
-	float angleOfView = 30 * PI / 180; //the horizontal angle of view
-	
-	//x, y, z are the coordinates on the floor, x axis straight ahead, y axis to the left
-	vector eCameraNormal = { cosf(cameraAngle), 0, -sinf(cameraAngle) };	//basis vector in the direction the camera is pointing
-	vector ex = { 0, -1, 0 };		//basis vector in the x direction of the camera image where the pixel x coordinate increases, so called image basis
-	vector ey = { sinf(cameraAngle), 0, cosf(cameraAngle) };	//basis vector in the y direction of the camera image where the pixel y coordinate increases
-
-	//a vector to a point on the line and a vector along the line in the basis ex, ey, eCameraNormal
-	vector vLinePoint = { r*cosf(angle) / 320 * tanf(angleOfView / 2), r*sinf(angle) / 320 * tanf(angleOfView / 2), 1 };
-	vector alongTheLine = { sinf(angle), -cosf(angle), 0 };
-	//normal vector to the plane that contains the viewer and the line in that same basis, calculated using vector product
-	vector planeNormal = { vLinePoint.e2 * alongTheLine.e3 - vLinePoint.e3 * alongTheLine.e2, 
-		vLinePoint.e3 * alongTheLine.e1 - vLinePoint.e1 * alongTheLine.e3,
-		vLinePoint.e1 * alongTheLine.e2 - vLinePoint.e2 * alongTheLine.e1 };
-	//the same normal vector in the floor xyz coordinates:
-	vector planeNormalFloor = { planeNormal.e1 * ex.e1 + planeNormal.e2 * ey.e1 + planeNormal.e3 * eCameraNormal.e1,
-								planeNormal.e1 * ex.e2 + planeNormal.e2 * ey.e2 + planeNormal.e3 * eCameraNormal.e2, 
-								planeNormal.e1 * ex.e3 + planeNormal.e2 * ey.e3 + planeNormal.e3 * eCameraNormal.e3 };
-	vector lineTangentLeftToRight = {};
-	float x, y;
-	if (planeNormalFloor.e2 >= 0) {
-		x = planeNormalFloor.e2, y = -planeNormalFloor.e1;
+void test() {
+	while (1) {
+		WaitForSingleObject(startSignal, INFINITE);
+		prints(L"Started\n");
+		testSingleBallTrack();
 	}
-	else {
-		x = -planeNormalFloor.e2, y = planeNormalFloor.e1;
-	}
-	if(x * 10000 < (y < 0 ? -y : y)){
-		angle = PI / 2;
-	}
-	else {
-		angle = atanf(y / x);
-	}
-	return angle;
 }
 
 void testSingleBallTrack() {
-	int currentx, currenty;
+	int currentx, currenty, ballCount;
 	while (WaitForSingleObject(newImageAnalyzed, 0) == WAIT_OBJECT_0); //wait for the first image to come
-	currentx = ballsShare.data[0].x, currenty = ballsShare.data[0].y;
+
+	WaitForSingleObject(writeMutex, INFINITE);
+	currentx = ballsShare.data[0].x, currenty = ballsShare.data[0].y, ballCount = ballsShare.count;
+	ReleaseMutex(writeMutex);
+
 	while (true) {
-		if (ballsShare.count == 0) {
-			setSpeed(0, 0, -3);
-			Sleep(50);
+		if (WaitForSingleObject(stopSignal, 50) == WAIT_OBJECT_0) {
+			setSpeed(0, 0, 0);
+			prints(L"Stopped\n\n");
+			return;
 		}
-		else if(currentx-320 > 60){
-			setSpeed(0, 0, -3);
-			Sleep(50);
+		if (ballCount == 0) {
+			setSpeed(0, 0, -60);
 		}
-		else if (currentx - 320 < 60) {
-			setSpeed(0, 0, 3);
-			Sleep(50);
+		else if(currentx-320 > 100){
+			setSpeed(0, 0, -60);
+		}
+		else if (currentx - 320 < -100) {
+			setSpeed(0, 0, 60);
 		}
 		else {
-			setSpeed(3, 0, 0);
-			Sleep(50);
+			setSpeed(0.3, 0, 0);
 		}
 		if (WaitForSingleObject(newImageAnalyzed, 0) == WAIT_OBJECT_0) {
 			WaitForSingleObject(writeMutex, INFINITE);
-			currentx = ballsShare.data[0].x, currenty = ballsShare.data[0].y;
+			currentx = ballsShare.data[0].x, currenty = ballsShare.data[0].y, ballCount = ballsShare.count;
 			ReleaseMutex(writeMutex);
 		}
 	}
 }
 
-//initializes the COM ports to the right handles
-void initCOMPorts() {
-	//read all the COM ports from the registry
-	HKEY hKey;
-	if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"HARDWARE\\DEVICEMAP\\SERIALCOMM", NULL, KEY_READ, &hKey) != ERROR_SUCCESS) {
-		prints(L"REGISTRY COM PORT LIST READING ERROR\n");
-		return;
-	}
-	wchar_t valueName[64] = {};
-	wchar_t dataBuffer[256] = {};
-	DWORD valueNameLen;
-	DWORD dataLen;
-	HANDLE COMPorts[4] = { hCOM1,hCOM2,hCOM3,hCOM4 }; //used to assign the com ports to the correct engines
-	for (int i = 0;RegEnumValueW(hKey, i, (LPWSTR)&valueName, &valueNameLen, NULL,
-		NULL, (LPBYTE)&dataBuffer, &dataLen) != ERROR_NO_MORE_ITEMS;++i) {
-		wprintf(L"%d %d %s\n", i, dataLen, dataBuffer);
-		//open the COM port and ask its ID, so that we know which wheel it is
-		HANDLE hComm = CreateFile(dataBuffer, GENERIC_READ | GENERIC_WRITE, 0, 0,
-			OPEN_EXISTING, 0, 0);
-		if (hComm == INVALID_HANDLE_VALUE)
-			prints(L"INVALID COM HANDLE %s\n", dataBuffer);
-		else {
-			sendString(hComm, "?\n");
-			receiveString(hComm, (char*)dataBuffer);
-			char id = *((char*)dataBuffer);
-			COMPorts[id - 1] = hComm; //assigns the port to the correct handle
-		}
 
+
+//initializes the COM ports to the right handles; not needed, we have a dongle
+void initCOMPort() {
+	DCB dcb = {};
+
+	//hCOMDongle = CreateFile(L"\\\\.\\COM3", GENERIC_READ | GENERIC_WRITE, 0, NULL,
+	//	OPEN_EXISTING, 0, NULL);
+	hCOMDongle = CreateFile(L"COM3", GENERIC_READ | GENERIC_WRITE, 0, NULL,
+		OPEN_EXISTING, 0, NULL);
+	if (hCOMDongle == INVALID_HANDLE_VALUE) {
+		prints(L"ERROR OPENING DONGLE COM PORT\n");
 	}
+	else {
+		prints(L"USB dongle COM port 3 opened\n");
+	}
+
+	ZeroMemory(&dcb, sizeof(DCB));
+	dcb.DCBlength = sizeof(DCB);
+	if (!GetCommState(hCOMRadio, &dcb))
+	{
+		prints(L"GetCommState failed with error %X.\n", GetLastError());
+	}
+	prints(L"Baudrate %d\n", dcb.BaudRate);
+
+	dcb.BaudRate = 19200;
+	dcb.ByteSize = 8;
+	dcb.Parity = NOPARITY;
+	dcb.StopBits = ONESTOPBIT;
+
+	if (!SetCommState(hCOMRadio, &dcb))
+	{
+		prints(L"SetCommState failed with error %X.\n", GetLastError());
+	}
+	else //turn off the failsafe of the engine controllers
+	{
+		sendString(hCOMDongle, "1:fs0\n");
+		sendString(hCOMDongle, "2:fs0\n");
+		sendString(hCOMDongle, "3:fs0\n");
+		sendString(hCOMDongle, "4:fs0\n");
+	}
+	prints(L"COM init end\n\n");
+
+	//this is not needed anymore, we have a dongle
+	////read all the COM ports from the registry
+	//HKEY hKey;
+	//if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"HARDWARE\\DEVICEMAP\\SERIALCOMM", NULL, KEY_READ, &hKey) != ERROR_SUCCESS) {
+	//	prints(L"REGISTRY COM PORT LIST READING ERROR\n");
+	//	return;
+	//}
+	//wchar_t valueName[64] = {};
+	//wchar_t dataBuffer[256] = {};
+	//DWORD valueNameLen;
+	//DWORD dataLen;
+	//HANDLE COMPorts[4] = { hCOM1,hCOM2,hCOM3,hCOM4 }; //used to assign the com ports to the correct engines
+	//for (int i = 0;RegEnumValueW(hKey, i, (LPWSTR)&valueName, &valueNameLen, NULL,
+	//	NULL, (LPBYTE)&dataBuffer, &dataLen) != ERROR_NO_MORE_ITEMS;++i) {
+	//	wprintf(L"%d %d %s\n", i, dataLen, dataBuffer);
+	//	//open the COM port and ask its ID, so that we know which wheel it is
+	//	HANDLE hComm = CreateFile(dataBuffer, GENERIC_READ | GENERIC_WRITE, 0, 0,
+	//		OPEN_EXISTING, 0, 0);
+	//	if (hComm == INVALID_HANDLE_VALUE)
+	//		prints(L"INVALID COM HANDLE %s\n", dataBuffer);
+	//	else {
+	//		sendString(hComm, "?\n");
+	//		receiveString(hComm, (char*)dataBuffer);
+	//		char id = *((char*)dataBuffer);
+	//		COMPorts[id - 1] = hComm; //assigns the port to the correct handle
+	//	}
+
+	//}
 }
+
+void checkCommand() {
+
+}
+
+
 
 void sendString(HANDLE hComm, char* outputBuffer) {
 	DWORD bytesWritten;
@@ -155,43 +184,142 @@ void sendString(HANDLE hComm, char* outputBuffer) {
 }
 
 //recieves the string upto the new line character and adds a zero character
-void receiveString(HANDLE hComm, char* outputBuffer) {
+int receiveString(HANDLE hComm, char* outputBuffer) {
 	DWORD bytesRead;
 	int i = 0;
-	while (outputBuffer[i] != '\n') {
+	while (outputBuffer[i] != '\n' && outputBuffer[i] != '\r') {
 		ReadFile(hComm, outputBuffer, 1, &bytesRead, NULL);
 		++i;
 	}
 	outputBuffer[i + 1] = '\0';
+	return i;
 }
 
 //sets the speed of a specific wheel to a value in the plate speed units
-void setEngineRotation(HANDLE hComm, int speed) {
+void setEngineRotation(int id, int speed) {
 	char writeBuffer[32] = {};
 	DWORD bytesWritten;
-	int len = sprintf_s(writeBuffer, "sd%d\n", speed);
+	int len = sprintf_s(writeBuffer, "%d:sd%d\n", id, speed);
 
-	WriteFile(hComm, writeBuffer, len, &bytesWritten, NULL);
+	WriteFile(hCOMDongle, writeBuffer, len, &bytesWritten, NULL);
 }
 
 //sets the robot speed to specific values, wheels go 1-2-3-4 from front left to back right
 //x axis is straight ahead, y axis is to the left
 //in units m, s, degrees, positive angle turns left
 void setSpeed(float speed, float angle, float angularVelocity) {
-	float wheelRadius = 3 / 100; //in meters
-	float baseRadius = 15 / 100; //base radius in meters from the center to the wheel
+	float wheelRadius = 3.5 / 100; //in meters
+	float baseRadius = 14.0 / 100; //base radius in meters from the center to the wheel
 
-	const float realToPlateUnits = 62.5 / (18.75 * 64);
+	const float realToPlateUnits = (18.75 * 64) / 62.5;
 	float vx = speed*cosf(angle * PI / 180);
 	float vy = speed*sinf(angle * PI / 180);
-	int wheel1Speed = (int)(((vx - vy) / wheelRadius - angularVelocity*baseRadius/wheelRadius)*realToPlateUnits);
-	int wheel2Speed = (int)(((vx + vy) / wheelRadius + angularVelocity*baseRadius / wheelRadius)*realToPlateUnits);
-	int wheel3Speed = (int)(((vx + vy) / wheelRadius - angularVelocity*baseRadius / wheelRadius)*realToPlateUnits);
-	int wheel4Speed = (int)(((vx - vy) / wheelRadius + angularVelocity*baseRadius / wheelRadius)*realToPlateUnits);
-	setEngineRotation(hCOM1, wheel1Speed);
-	setEngineRotation(hCOM2, wheel2Speed);
-	setEngineRotation(hCOM3, wheel3Speed);
-	setEngineRotation(hCOM4, wheel4Speed);
+	prints(L"speed %.2f angle %.2f angularvelocity %.2f vx %.2f vy %.2f\n", speed, angle, angularVelocity, vx, vy);
+	int wheel1Speed = (int)(((vx - vy) / (wheelRadius * SQRT2 * 2 * PI) - angularVelocity/360 * baseRadius / wheelRadius)*realToPlateUnits);
+	int wheel2Speed = (int)(((vx + vy) / (wheelRadius * SQRT2 * 2 * PI) + angularVelocity/360 * baseRadius / wheelRadius)*realToPlateUnits);
+	int wheel3Speed = (int)(((vx + vy) / (wheelRadius * SQRT2 * 2 * PI) - angularVelocity/360 * baseRadius / wheelRadius)*realToPlateUnits);
+	int wheel4Speed = (int)(((vx - vy) / (wheelRadius * SQRT2 * 2 * PI) + angularVelocity/360 * baseRadius / wheelRadius)*realToPlateUnits);
+	if (wheel1Speed > 190 || wheel2Speed > 190 || wheel3Speed > 190 || wheel4Speed > 190)
+		prints(L"Wheel speed overflow.");
+	prints(L"%d %d %d %d\n", wheel1Speed, wheel2Speed, wheel3Speed, wheel4Speed);
+	setEngineRotation(1, wheel1Speed);
+	setEngineRotation(2, wheel2Speed);
+	setEngineRotation(3, wheel3Speed);
+	setEngineRotation(4, wheel4Speed);
+}
+
+//calculates the direction of the robot modulo 90 degrees. For this it determines the orientation with respect to the field lines.
+float calculateDirection(lineInfo line) {
+	int r = line.radius;
+	float angle = line.angle;
+
+	float height = 25 / 100; //height in meters
+	float cameraAngle = 10 * PI / 180; //the angle that the camera is down with respect to the horizontal
+	float angleOfView = 30 * PI / 180; //the horizontal angle of view
+
+									   //x, y, z are the coordinates on the floor, x axis straight ahead, y axis to the left
+	vector eCameraNormal = { cosf(cameraAngle), 0, -sinf(cameraAngle) };	//basis vector in the direction the camera is pointing
+	vector ex = { 0, -1, 0 };		//basis vector in the x direction of the camera image where the pixel x coordinate increases, so called image basis
+	vector ey = { sinf(cameraAngle), 0, cosf(cameraAngle) };	//basis vector in the y direction of the camera image where the pixel y coordinate increases
+
+																//a vector to a point on the line and a vector along the line in the basis ex, ey, eCameraNormal
+	vector vLinePoint = { r*cosf(angle) / 320 * tanf(angleOfView / 2), r*sinf(angle) / 320 * tanf(angleOfView / 2), 1 };
+	vector alongTheLine = { sinf(angle), -cosf(angle), 0 };
+	//normal vector to the plane that contains the viewer and the line in that same basis, calculated using vector product
+	vector planeNormal = { vLinePoint.e2 * alongTheLine.e3 - vLinePoint.e3 * alongTheLine.e2,
+		vLinePoint.e3 * alongTheLine.e1 - vLinePoint.e1 * alongTheLine.e3,
+		vLinePoint.e1 * alongTheLine.e2 - vLinePoint.e2 * alongTheLine.e1 };
+	//the same normal vector in the floor xyz coordinates:
+	vector planeNormalFloor = { planeNormal.e1 * ex.e1 + planeNormal.e2 * ey.e1 + planeNormal.e3 * eCameraNormal.e1,
+		planeNormal.e1 * ex.e2 + planeNormal.e2 * ey.e2 + planeNormal.e3 * eCameraNormal.e2,
+		planeNormal.e1 * ex.e3 + planeNormal.e2 * ey.e3 + planeNormal.e3 * eCameraNormal.e3 };
+	vector lineTangentLeftToRight = {};
+	float x, y;
+	if (planeNormalFloor.e2 >= 0) {
+		x = planeNormalFloor.e2, y = -planeNormalFloor.e1;
+	}
+	else {
+		x = -planeNormalFloor.e2, y = planeNormalFloor.e1;
+	}
+	if (x * 10000 < (y < 0 ? -y : y)) {
+		angle = PI / 2;
+	}
+	else {
+		angle = atanf(y / x);
+	}
+	return angle;
+}
+
+void initUSBRadio() {
+	DCB dcb;
+	HANDLE hCOMRadio;
+	hCOMRadio = CreateFile(L"\\\\.\\COM5", GENERIC_READ | GENERIC_WRITE, 0, 0,
+		OPEN_EXISTING, 0, 0);
+
+	if (hCOMRadio == INVALID_HANDLE_VALUE) {
+		prints(L"ERROR OPENING USB COM PORT\N");
+	}
+	ZeroMemory(&dcb, sizeof(dcb));
+	dcb.DCBlength = sizeof(dcb);
+
+	if (!GetCommState(hCOMRadio, &dcb))
+	{
+		prints(L"GetCommState failed with error %d.\n", GetLastError());
+	}
+	prints(L"Baudrate %d\n", dcb.BaudRate);
+
+	dcb.BaudRate = 9600;
+	dcb.ByteSize = 8;
+	dcb.Parity = NOPARITY;
+	dcb.StopBits = ONESTOPBIT;
+
+	if (!SetCommState(hCOMRadio, &dcb))
+	{
+		prints(L"SetCommState failed with error %d.\n", GetLastError());
+	}
+
+
+	char* buffer = "+++\0";
+	DWORD bytesRead = 0;
+	WriteFile(hCOMRadio, buffer, 3, &bytesRead, NULL);
+	prints(L"Wrote %d bytes.\n", bytesRead);
+
+	char readBuffer[128] = {};
+	bytesRead = 0;
+	Sleep(1000);
+	if (!ReadFile(hCOMRadio, readBuffer, 2, &bytesRead, NULL))
+		prints(L"Read failed with error %X.\n", GetLastError());
+
+	prints(L"Read %d bytes.\n", bytesRead);
+
+	prints(L"%S\n", readBuffer);
+	if (lstrcmpA(readBuffer, "OK") == 0) {
+		prints(L"USB Radio initialization successful.\n");
+	}
+	else
+	{
+		prints(L"Did not receive OK from the radio.\n");
+	}
 }
 
 //no longer needed, the image processing is in the GUICamera file, done as soon as the frame arrives in BufferCB
