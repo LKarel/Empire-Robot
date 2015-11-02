@@ -23,7 +23,7 @@ DWORD dwCommEvent = 0; //variable for the WaitCommEvent, stores the type of the 
 int listenToRadio; //whether to listen to commands from the radio or not
 char* currentID;
 drivingState currentDrivingState;
-extern objectCollection ballsShare, goalsShare;
+extern objectCollection ballsShare, goalsBlueShare, goalsYellowShare;
 extern HANDLE writeMutex;
 extern BOOLEAN calibrating;
 void sendString(HANDLE hComm, char* outputBuffer);
@@ -75,20 +75,26 @@ void test() {
 			WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus);
 			break;
 		case WAIT_OBJECT_0+1:
+			prints(L"Start signal arrived.\n");
 			testSingleBallTrack();
+			break;
 		}
 	}
 }
 
 void testSingleBallTrack() {
 	HANDLE waitHandles[4] = { newImageAnalyzed, stopSignal, osStatus.hEvent, calibratingSignal };
-	int currentx = 0, currenty = 0, ballCount = 0;
+	int currentx = 0, currenty = 0;
 	int timeOut = 50; //timeout after sending each command
+	int lookForGoal = 0, lookForBall = 1;
+	objectCollection objects;
+
 	while (true) {
 		switch (WaitForMultipleObjects(4, waitHandles, FALSE, timeOut)) {
 		case WAIT_OBJECT_0: //new image analyzed
-			continue;
+			break;
 		case WAIT_OBJECT_0 +1: //stop signal
+			prints(L"Stop signal arrived.\n");
 			setSpeed(0, 0, 0);
 			ResetEvent(startSignal);
 			return;
@@ -97,23 +103,77 @@ void testSingleBallTrack() {
 			prints(L"radio event %X\n", dwCommEvent);
 			receiveCommand();
 			WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus);
-			break;
+			continue;
 		case WAIT_OBJECT_0 + 3: //calibrating signal
+			prints(L"Calibrating signal.\n");
 			setSpeed(0, 0, 0);
 			WaitForSingleObject(calibratingEndSignal, INFINITE);
 			continue;
 		}
-		if (ballCount == 0) {
-			setSpeed(0, 0, -60);
-		}
-		else if(currentx-320 > 100){
-			setSpeed(0, 0, -60);
-		}
-		else if (currentx - 320 < -100) {
-			setSpeed(0, 0, 60);
+		if (lookForGoal) {
+			if (currentID[1] == 'A') {
+				objects = goalsBlueShare;
+			}
+			else {
+				objects = goalsYellowShare;
+			}
 		}
 		else {
-			setSpeed(0.3, 0, 0);
+			objects = ballsShare;
+		}
+		if (objects.count == 0) { //rotate until you find an object
+			if (lookForBall) { //rotate to find the ball
+				currentDrivingState.speed = 0, currentDrivingState.angle = 0, currentDrivingState.angularVelocity = -60;
+				setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			}
+			else { //rotate to find the goal
+				currentDrivingState.speed = 0.14*20/180*PI, currentDrivingState.angle = 90, currentDrivingState.angularVelocity = -20;
+				setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			}
+		}
+		else {
+			int minDist = (currentx - objects.data[0].x) * (currentx - objects.data[0].x) + (currenty - objects.data[0].y) * (currenty - objects.data[0].y), minIndex = 0;
+			for (int i = 1; i < objects.count; ++i) {
+				int dist = (currentx - objects.data[i].x) * (currentx - objects.data[i].x) + (currenty - objects.data[i].y) * (currenty - objects.data[i].y);
+				if (dist < minDist) {
+					minDist = dist;
+					minIndex = i;
+				}
+			}
+			currentx = objects.data[minIndex].x, currenty = objects.data[minIndex].y;
+			if (currenty < 70 && lookForBall) {
+				lookForBall = 0;
+				lookForGoal = 1;
+				prints(L"Starting to look for goal\n");
+				continue;
+			}
+			if (lookForGoal) {
+				prints(L"Looking for the goal\n");
+				if (abs(currentx - 320) < 40) {
+					currentDrivingState.speed = 0.1, currentDrivingState.angle = 0, currentDrivingState.angularVelocity = 0;
+					setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+				}
+				else {
+					float angular = -(currentx - 320) / 320 * 20;
+					currentDrivingState.speed = 0.14 * (angular > 0 ? angular : -angular) / 180 * PI, currentDrivingState.angle = 90, currentDrivingState.angularVelocity = angular;
+					setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+				}
+			}
+			else { //looking for the ball
+				currentDrivingState.angularVelocity = -40.0*(currentx-320)/320;
+				if (currenty < 150) {
+					prints(L"Ball very near\n");
+					currentDrivingState.speed = 0.05;
+				}
+				if (currenty < 180) {
+					prints(L"Ball near\n");
+					currentDrivingState.speed = 0.1;
+				}
+				else
+					currentDrivingState.speed = 0.2;
+				currentDrivingState.angle = 0;
+				setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			}
 		}
 	}
 }
@@ -139,9 +199,11 @@ void respondACK() {
 
 void receiveCommand() { //the character 'a' was received from the radio, now read the buffer, find all the a-s and check for commands
 	DWORD bytesRead = 0;
-	DWORD start = 0, length = 10; //the current position in the buffer and the length of the unread buffer
+	DWORD start = 0, length = 12; //the current position in the buffer and the length of the unread buffer
 	char readBuffer[128] = {};
-	readCOM(hCOMRadio, readBuffer, 10, bytesRead);
+	readCOM(hCOMRadio, readBuffer, 12, bytesRead);
+	prints(L"Checking command: %S, valid: %d\n", readBuffer, validCommand(readBuffer));
+
 	while (true) {
 		if (readBuffer[start] != 'a') {
 			++start;
@@ -149,7 +211,7 @@ void receiveCommand() { //the character 'a' was received from the radio, now rea
 		}
 		else {
 			if (length < 12) {
-				readCOM(hCOMRadio, readBuffer + start, 10, bytesRead);
+				readCOM(hCOMRadio, readBuffer + start, 12, bytesRead);
 				if (bytesRead + length < 12) {
 					return;
 				}
@@ -161,9 +223,17 @@ void receiveCommand() { //the character 'a' was received from the radio, now rea
 					checkCommand(readBuffer + start);
 				}
 			}
+			else {
+				checkCommand(readBuffer + start);
+				++start;
+				--length;
+			}
 		}
 		if (length == 0) {
-			readCOM(hCOMRadio, readBuffer + start, 10, bytesRead);
+			readCOM(hCOMRadio, readBuffer + start, 12, bytesRead);
+			if (bytesRead < 12) {
+				return;
+			}
 			length = bytesRead;
 		}
 		if (start > 40) {
@@ -217,14 +287,18 @@ void initCOMPort() {
 }
 
 boolean validCommand(char* readBuffer) {
-	char tempBuffer[12] = {};
+	char tempBuffer[32] = {};
 	CopyMemory(tempBuffer, readBuffer, 12);
-	if (strcmp(tempBuffer, "STOP-----") != 0 && strcmp(tempBuffer, "START----") != 0)
+	if (lstrcmpA(tempBuffer + 3, "STOP-----") != 0 && lstrcmpA(tempBuffer + 3, "START----") != 0) {
+		prints(L"here1");
 		return FALSE;
-	if (tempBuffer[0] != 'a')
+	}
+	if (tempBuffer[0] != 'a') {
 		return FALSE;
-	if (tempBuffer[1] != 'A' && tempBuffer[1] != 'B')
+	}
+	if (tempBuffer[1] != 'A' && tempBuffer[1] != 'B') {
 		return FALSE;
+	}
 	char* allowed = "XABCD";
 	for (int i = 0; i < strlen(allowed); ++i) {
 		if (allowed[i] == tempBuffer[2]) {
@@ -236,17 +310,17 @@ boolean validCommand(char* readBuffer) {
 }
 
 void checkCommand(char* readBuffer) {
-	char tempBuffer[12] = {};
+	char tempBuffer[32] = {};
 	CopyMemory(tempBuffer, readBuffer, 12);
 	if (validCommand(readBuffer)) {
 		if (readBuffer[1] == currentID[0]) {
 			if (readBuffer[2] == 'X' || readBuffer[2] == currentID[1]) {
-				if (strcmp(tempBuffer, "STOP-----") == 0) {
+				if (strcmp(tempBuffer+3, "STOP-----") == 0) {
 					ResetEvent(startSignal);
 					SetEvent(stopSignal);
 					respondACK();
 				}
-				else if (strcmp(tempBuffer, "START----") == 0) {
+				else if (strcmp(tempBuffer+3, "START----") == 0) {
 					ResetEvent(stopSignal);
 					SetEvent(startSignal);
 					respondACK();
@@ -365,7 +439,7 @@ void initUSBRadio() {
 	osStatus.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
 
 	DCB dcb;
-	hCOMRadio = CreateFile(L"\\\\.\\COM5", GENERIC_READ | GENERIC_WRITE, 0, 0,
+	hCOMRadio = CreateFile(L"\\\\.\\COM4", GENERIC_READ | GENERIC_WRITE, 0, 0,
 		OPEN_EXISTING, FILE_FLAG_OVERLAPPED, 0);
 	if (hCOMRadio == INVALID_HANDLE_VALUE) {
 		prints(L"ERROR OPENING USB COM PORT\N");

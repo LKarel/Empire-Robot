@@ -268,7 +268,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 	ballCount = 0;
 	//printf("balls count before: %d\n", balls.count);
 	for (int i = 0; i <= balls.count; ++i) {
-		if (balls.data[i].pixelcount >= 100) {
+		if (balls.data[i].pixelcount >= 150) {
 			balls.data[ballCount] = balls.data[i];
 			balls.data[ballCount].x /= balls.data[ballCount].pixelcount;
 			balls.data[ballCount].y /= balls.data[ballCount].pixelcount;
@@ -282,7 +282,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 
 	goalCount = 0;
 	for (int i = 0; i <= goalsBlue.count; ++i) {
-		if (goalsBlue.data[i].pixelcount >= 100) {
+		if (goalsBlue.data[i].pixelcount >= 500) {
 			goalsBlue.data[goalCount] = goalsBlue.data[i];
 			goalsBlue.data[goalCount].x /= goalsBlue.data[goalCount].pixelcount;
 			goalsBlue.data[goalCount].y /= goalsBlue.data[goalCount].pixelcount;
@@ -295,7 +295,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 
 	goalCount = 0;
 	for (int i = 0; i <= goalsYellow.count; ++i) {
-		if (goalsYellow.data[i].pixelcount >= 100) {
+		if (goalsYellow.data[i].pixelcount >= 500) {
 			goalsYellow.data[goalCount] = goalsYellow.data[i];
 			goalsYellow.data[goalCount].x /= goalsYellow.data[goalCount].pixelcount;
 			goalsYellow.data[goalCount].y /= goalsYellow.data[goalCount].pixelcount;
@@ -314,7 +314,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 			int up = angle < 150-1 ? houghTransformBuffer[r + 150 * (angle + 1)] / 2 : 0;
 			int right = r < 150-1 ? houghTransformBuffer[r + 1 + 150 * angle] / 2 : 0;
 			int down = angle > 0 ? houghTransformBuffer[r + 150 * (angle - 1)] / 2 : 0;
-			if (current > 100 && current >= left && current >= down && current > right && current > up) {
+			if (current > 300 && current >= left && current >= down && current > right && current > up) {
 				lines.data[lines.count].radius = 4*r;
 				lines.data[lines.count].angle = angle*2*PI/150;
 				lines.data[lines.count].pixelcount = current;
@@ -653,9 +653,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
 		case ID_BUTTON1:
+			ResetEvent(stopSignal);
 			SetEvent(startSignal);
 			return 0;
 		case ID_BUTTON2:
+			ResetEvent(startSignal);
 			SetEvent(stopSignal);
 			return 0;
 		case ID_BUTTON3:
@@ -912,8 +914,9 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 			}
 			return 0;
 		case ID_BUTTON_DONE:
-			ShowWindow(hwnd, SW_HIDE);
-			calibrating = FALSE;
+			//ShowWindow(hwnd, SW_HIDE);
+			//calibrating = FALSE;
+			SendMessage(hwndCalibrate, WM_CLOSE, 0, 0);
 			return 0;
 		case ID_BUTTON_SAVE:
 			saveToFileColorThresholds();
@@ -1114,7 +1117,7 @@ LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 			}
 			setSlidersToValues(activeColors);
 
-			prints(L"clicked on red %d green %d blue %d\n", red, green, blue);
+			prints(L"clicked on red %d green %d blue %d, x: %d, y: %d\n", red, green, blue, x, y);
 		}
 		break;
 	}
