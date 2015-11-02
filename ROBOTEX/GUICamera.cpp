@@ -5,9 +5,11 @@
 #define PI (3.1415927f)
 #define MAX3(r,g,b) ( r >= g ? (r >= b ? r : b) : (g >= b ? g : b) ) //max of three
 #define MIN3(r,g,b) ( r <= g ? (r <= b ? r : b) : (g <= b ? g : b) ) //min of three
-#define OBJECTINDEX(x) ((x)&0x7FFFFFFF)	//first 31 bits, gives the index of the current ball or goal
+#define OBJECTINDEX(x) ((x)&0x3FFFFFFF)	//first 30 bits, gives the index of the current ball or goal
 #define BALLORGOAL(x) (((x)>>31)&1)	//32rd bit, the identifier for whether the pixel represents a ball or a goal
 #define BIT32 (1<<31)
+#define GETOBJID(x) (((x)>>30)&3) //object ids in the temporary buffer, the last bits determine what kind of an object it is
+#define MAKEOBJID(x) ((x)<<30)
 #define HUE(red,green,blue) ((red >= green && green >= blue) ?	((float)(green - blue) / (red - blue)) :\
 			(green > red && red >= blue) ?	(2 - (float)(red - blue) / (green - blue)):\
 			(green >= blue && blue > red) ?	(2 + (float)(blue - red) / (green - red)):\
@@ -20,7 +22,6 @@
 #define VALUE(red,green,blue) ((float)MAX3(red, green, blue)/255)
 
 //constants for events and ID-s of GUI elements
-#define ID_EDITCHILD 100
 #define WM_GRAPH_EVENT (WM_APP + 1)
 
 //used for video media type to save the type and find the right one when initializing the camera
@@ -73,15 +74,18 @@ HWND hwndHue;	//handles for the sliders in the calibrating window
 HWND hwndSaturation;
 HWND hwndValue;
 HWND ballsRadioButton;
-HWND goalsRadioButton;
+HWND goalsBlueRadioButton;
+HWND goalsYellowRadioButton;
 HWND linesRadioButton;
 HWND whitenCheckBox;
 HWND minRadioButton;
 HWND maxRadioButton;
+HWND radioCheckBox;
+HWND hwndEditID = NULL;
 
 BOOLEAN calibrating = FALSE;	//state variable
 BOOLEAN whitenThresholdPixels;	//whether to make the selected pixels white during calibration
-drivingState currentDrivingState;	//current driving speed valuse
+extern drivingState currentDrivingState;	//current driving speed valuse
 
 //signals for communicating between threads
 extern HANDLE readySignal;
@@ -89,16 +93,19 @@ extern HANDLE newImageAnalyzed;
 extern HANDLE startSignal;
 extern HANDLE stopSignal;
 extern HANDLE calibratingSignal;
+extern HANDLE calibratingEndSignal;
+extern int listenToRadio;
+extern char* currentID;
 HANDLE writeMutex = CreateMutex(NULL, FALSE, NULL);
 
 enum {
-	ID_BUTTON1, ID_BUTTON2, ID_BUTTON3, ID_BUTTON_DONE, ID_TRACKBAR_HUE, ID_TRACKBAR_SATURATION,
+	ID_EDITCHILD, ID_BUTTON1, ID_BUTTON2, ID_BUTTON3, ID_BUTTON_DONE, ID_TRACKBAR_HUE, ID_TRACKBAR_SATURATION,
 	ID_TRACKBAR_VALUE, ID_RADIOBOXGROUP_MINMAX, ID_RADIOBOX_MIN, ID_RADIOBOX_MAX, ID_BUTTON_SAVE,
-	ID_BUTTON_RESET, ID_RADIOBOXGROUP_OBJECTSELECTOR, ID_RADIOBOX_BALLS, ID_RADIOBOX_GOALS, ID_RADIOBOX_LINES,
-	ID_CHECKBOX_WHITEN
+	ID_BUTTON_RESET, ID_RADIOBOXGROUP_OBJECTSELECTOR, ID_RADIOBOX_BALLS, ID_RADIOBOX_GOALSBLUE, ID_RADIOBOX_GOALSYELLOW,
+	ID_RADIOBOX_LINES, ID_CHECKBOX_WHITEN, ID_CHECKBOX_RADIO, ID_EDIT_ID
 };
 
-objectCollection balls, goals, ballsShare, goalsShare; //local data structure for holding objects and shared structures
+objectCollection balls, goalsBlue, goalsYellow, ballsShare, goalsBlueShare, goalsYellowShare; //local data structure for holding objects and shared structures
 lineCollection lines, linesShare; //data for the lines
 
 //structure for storing the threshold color values of different objects
@@ -112,52 +119,93 @@ struct colorValues {
 	float value = 0;	//from 0 to 1
 	float valueMin;
 	float valueMax;
-} ballColors, goalColors, lineColors;
+} ballColors, goalBlueColors, goalYellowColors, lineColors;
 colorValues *activeColors;	//the current active color values in the calibrator
 
 enum CurrentCalibratorSetting { minimum, maximum };
 CurrentCalibratorSetting currentCalibratorSetting = minimum;
 
-//temporary for the weekly assignment, so that we could show something that drives the engines
-//void rotate(HANDLE hComm, int speed, float time) {
-//	char writeBuffer[32] = {};
-//	DWORD bytesWritten;
-//	int len = sprintf_s(writeBuffer, "sd%d\n", speed);
-//
-//	WriteFile(hComm, writeBuffer, len, &bytesWritten, NULL);
-//	Sleep((DWORD)(time*1000-100));
-//	WriteFile(hComm, "sd0\n", 4, &bytesWritten, NULL);
-//	time = time > 0.1 ? time : 0.1;
-//	Sleep(100);
-//}
-//
-//void driveTest() {
-//	HANDLE hComm = CreateFile(L"\\\\.\\COM12", GENERIC_READ | GENERIC_WRITE, 0, 0,
-//		OPEN_EXISTING, 0, 0);
-//	if (hComm == INVALID_HANDLE_VALUE) {
-//		prints(L"INVALID COM PORT HANDLE\n");
-//		return;
-//	}
-//
-//	char writeBuffer[32] = {};
-//	DWORD bytesWritten;
-//	WriteFile(hComm, "st\n", 3, &bytesWritten, NULL);
-//
-//	rotate(hComm, 30, 1);
-//	rotate(hComm, 50, 0.5);
-//	rotate(hComm, 80, 0.5);
-//	rotate(hComm, 0, 0.5);
-//	rotate(hComm, -60, 0.5);
-//
-//	char *readBuffer[128]{};
-//	DWORD bytesRead;
-//	for (int i = 0;i < 10;++i) {
-//		if(!ReadFile(hComm, readBuffer, 1, &bytesRead, NULL))
-//			prints(L"read error\n");
-//		prints(L"%s\n", readBuffer);
-//	}
-//	CloseHandle(hComm);
-//}
+void analyzePixelSurroundings(objectCollection &objects, colorValues &colors, int objectType, DWORD* pixBuffer, DWORD* pBufferCopy, int &x, int &y) {
+	//check if there is already a goal in the pixel below it, then group it together with it
+	if (y > 0 && GETOBJID(pBufferCopy[x + 640 * (y - 1)]) == objectType &&
+		OBJECTINDEX(pBufferCopy[x + 640 * (y - 1)])) {
+		int index = OBJECTINDEX(pBufferCopy[x + 640 * (y - 1)]);
+		//remove the new group if it was made and decrease the object count
+		if (x >= 1 && pBufferCopy[x - 1 + 640 * y] &&
+			GETOBJID(pBufferCopy[x - 1 + 640 * y]) == objectType) {
+			objects.count -= 1;
+			objects.data[OBJECTINDEX(pBufferCopy[x - 1 + 640 * y])] = {};
+		}
+		//change all the pixels before to the new object index
+		pBufferCopy[x + 640 * y] = index + MAKEOBJID(objectType);
+		objects.data[index].pixelcount += 1;
+		objects.data[index].x += x;
+		objects.data[index].y += y;
+		for (int x2 = x - 1; x2 >= 0 && pBufferCopy[x2 + 640 * y] &&
+			GETOBJID(pBufferCopy[x2 + 640 * y]) == objectType; --x2) {
+			pBufferCopy[x2 + 640 * y] = index + MAKEOBJID(objectType);
+			objects.data[index].pixelcount += 1;
+			objects.data[index].x += x;
+			objects.data[index].y += y;
+		}
+		//change all the pixels forward in the line to the object index,
+		//merge the objects if it meets another object
+		for (++x; x < 640; ++x) {
+			int blue = (pixBuffer[x + y * 640]) & 0xFF, green = (pixBuffer[x + y * 640] >> 8) & 0xFF,
+				red = (pixBuffer[x + y * 640] >> 16) & 0xFF;
+			float hue = HUE(red, green, blue);
+			float saturation = SATURATION(red, green, blue);
+			float value = VALUE(red, green, blue);
+
+			if (!(colors.hueMax >= hue && hue >= colors.hueMin &&
+				colors.saturationMax >= saturation && saturation >= colors.saturationMin &&
+				colors.valueMax >= value && value >= colors.valueMin)) {
+				--x;
+				break;
+			}
+			objects.data[index].pixelcount += 1;
+			objects.data[index].x += x;
+			objects.data[index].y += y;
+			pBufferCopy[x + 640 * y] = index + MAKEOBJID(objectType);
+			int index2 = OBJECTINDEX(pBufferCopy[x + (y - 1) * 640]);
+			//there are objects with different indexes on the current pixel and below it
+			if (GETOBJID(pBufferCopy[x + (y - 1) * 640]) == objectType &&
+				index2 && index2 != index) {
+				//copy the pixels and coordinates from the object under the line to the new object
+				objects.data[index].pixelcount += objects.data[index2].pixelcount;
+				objects.data[index].x += objects.data[index2].x;
+				objects.data[index].y += objects.data[index2].y;
+				objects.data[index2] = {};
+				//set the last line of the object from the line under to the proper index, so that when
+				//it is encoutered again, it is interpreted as the correct object
+				for (int x2 = x; x2 <= 640 && GETOBJID(pBufferCopy[x2 + (y - 1) * 640]) == objectType &&
+					OBJECTINDEX(pBufferCopy[x2 + (y - 1) * 640]) == index2; ++x2) {
+					pBufferCopy[x2 + (y - 1) * 640] = index + MAKEOBJID(objectType);
+				}
+			}
+		}
+	}
+	else {
+		//if there is an object pixel to the left
+		if (x > 0 && GETOBJID(pBufferCopy[x - 1 + 640 * y]) == objectType && pBufferCopy[x - 1 + 640 * y]) {
+			int index = OBJECTINDEX(pBufferCopy[x - 1 + 640 * y]);
+			objects.data[index].x += x;
+			objects.data[index].y += y;
+			objects.data[index].pixelcount += 1;
+			pBufferCopy[x + 640 * y] = index + MAKEOBJID(objectType);
+		}
+		//start a new object
+		else {
+			++(objects.count);
+			pBufferCopy[x + 640 * y] = objects.count + MAKEOBJID(objectType);
+			if (objects.count == objects.size)
+				doubleObjectBufferSize(&objects);
+			objects.data[objects.count].pixelcount += 1;
+			objects.data[objects.count].x += x;
+			objects.data[objects.count].y += y;
+		}
+	}
+}
 
 //this analyzes the image to find all the balls, the goals and the black lines
 void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
@@ -166,10 +214,10 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 	ZeroMemory(pBufferCopy, 640 * 480 * 4); //zero the buffer with the indexes and object information
 	ZeroMemory(houghTransformBuffer, 150 * 150 * 4);
 	ZeroMemory(balls.data, balls.size*sizeof(objectInfo));
-	ZeroMemory(goals.data, goals.size*sizeof(objectInfo));
+	ZeroMemory(goalsBlue.data, goalsBlue.size*sizeof(objectInfo));
 	ZeroMemory(lines.data, lines.size*sizeof(lineInfo));
 	balls.count = 0;
-	goals.count = 0;
+	goalsBlue.count = 0;
 	lines.count = 0;
 	for (int y = 0; y < 480; ++y) {
 		for (int x = 0; x < 640; ++x) {
@@ -186,173 +234,19 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 			if (ballColors.hueMax >= hue && hue >= ballColors.hueMin &&
 				ballColors.saturationMax >= saturation && saturation >= ballColors.saturationMin &&
 				ballColors.valueMax >= value && value >= ballColors.valueMin) {
-				//check if there is already a ball in the pixel below it, then group it together with it
-				if (y > 0 && !BALLORGOAL(pBufferCopy[x + 640 * (y - 1)]) && 
-					OBJECTINDEX(pBufferCopy[x + 640 * (y - 1)])) {
-					int index = OBJECTINDEX(pBufferCopy[x + 640 * (y - 1)]);
-					//remove the new group if it was made and decrease the ballcount
-					if (x >= 1 && pBufferCopy[x - 1 + 640 * y] &&
-						!BALLORGOAL(pBufferCopy[x - 1 + 640 * y])) {
-						ballCount -= 1;
-						balls.data[OBJECTINDEX(pBufferCopy[x - 1 + 640 * y])] = {};
-					}
-					//change all the pixels before to the new object index
-					pBufferCopy[x + 640 * y] = index;
-					balls.data[index].pixelcount += 1;
-					balls.data[index].x += x;
-					balls.data[index].y += y;
-					for (int x2 = x - 1; x2 >= 0 && pBufferCopy[x2 + 640 * y] &&
-						!BALLORGOAL(pBufferCopy[x2 + 640 * y]); --x2) {
-						pBufferCopy[x2 + 640 * y] = index;
-						balls.data[index].pixelcount += 1;
-						balls.data[index].x += x;
-						balls.data[index].y += y;
-					}
-					//change all the pixels forward in the line to the object index,
-					//merge the objects if it meets another ball
-					for (++x; x < 640; ++x) {
-						int blue = (pixBuffer[x + y * 640]) & 0xFF, green = (pixBuffer[x + y * 640] >> 8) & 0xFF,
-							red = (pixBuffer[x + y * 640] >> 16) & 0xFF;
-						float hue = HUE(red, green, blue);
-						float saturation = SATURATION(red, green, blue);
-						float value = VALUE(red, green, blue);
-
-						if (!(ballColors.hueMax >= hue && hue >= ballColors.hueMin &&
-							ballColors.saturationMax >= saturation && saturation >= ballColors.saturationMin &&
-							ballColors.valueMax >= value && value >= ballColors.valueMin)) {
-							--x;
-							break;
-						}
-						balls.data[index].pixelcount += 1;
-						balls.data[index].x += x;
-						balls.data[index].y += y;
-						pBufferCopy[x + 640 * y] = index;
-						int index2 = OBJECTINDEX(pBufferCopy[x + (y - 1) * 640]);
-						if (y == 120)
-							prints(L"5: x %d y %d\n", x, y);
-						//there are objects with different indexes on the current pixel and below it
-						if (!BALLORGOAL(pBufferCopy[x + (y-1) * 640]) && 
-							index2 && index2 != index) {
-							//copy the pixels and coordinates from the object under the line to the new object
-							balls.data[index].pixelcount += balls.data[index2].pixelcount;
-							balls.data[index].x += balls.data[index2].x;
-							balls.data[index].y += balls.data[index2].y;
-							balls.data[index2] = {};
-							//set the last line of the object from the line under to the proper index, so that when
-							//it is encoutered again, it is interpreted as the correct object
-							for (int x2 = x; x2 <= 640 && !BALLORGOAL(pBufferCopy[x2 + (y - 1) * 640]) && 
-									OBJECTINDEX(pBufferCopy[x2 + (y - 1) * 640]) == index2; ++x2) {
-								pBufferCopy[x2 + (y - 1) * 640] = index;
-							}
-						}
-					}
-				}
-				else {
-					//if there is a ball pixel to the left
-					if (x > 0 && !BALLORGOAL(pBufferCopy[x - 1 + 640 * y]) && pBufferCopy[x - 1 + 640 * y]){
-						int index = OBJECTINDEX(pBufferCopy[x - 1 + 640 * y]);
-						balls.data[index].x += x;
-						balls.data[index].y += y;
-						balls.data[index].pixelcount += 1;
-						pBufferCopy[x + 640 * y] = index;
-					}
-					//start a new object
-					else {
-						++ballCount;
-						balls.count = ballCount;
-						pBufferCopy[x + 640 * y] = ballCount;
-						if (ballCount == balls.size)
-							doubleObjectBufferSize(&balls);
-						balls.data[ballCount].pixelcount += 1;
-						balls.data[ballCount].x += x;
-						balls.data[ballCount].y += y;
-					}
-				}
+				analyzePixelSurroundings(balls, ballColors, 0, pixBuffer, pBufferCopy, x, y);
 			}
-			//if it is a goal pixel
-			else if (goalColors.hueMax >= hue && hue >= goalColors.hueMin &&
-				goalColors.saturationMax >= saturation && saturation >= goalColors.saturationMin &&
-				goalColors.valueMax >= value && value >= goalColors.valueMin) {
-				//check if there is already a goal in the pixel below it, then group it together with it
-				if (y > 0 && BALLORGOAL(pBufferCopy[x + 640 * (y - 1)]) &&
-					OBJECTINDEX(pBufferCopy[x + 640 * (y - 1)])) {
-					int index = OBJECTINDEX(pBufferCopy[x + 640 * (y - 1)]);
-					//remove the new group if it was made and decrease the ballcount
-					if (x >= 1 && pBufferCopy[x - 1 + 640 * y] &&
-						BALLORGOAL(pBufferCopy[x - 1 + 640 * y])) {
-						goalCount -= 1;
-						goals.data[OBJECTINDEX(pBufferCopy[x - 1 + 640 * y])] = {};
-					}
-					//change all the pixels before to the new object index
-					pBufferCopy[x + 640 * y] = index + BIT32;
-					goals.data[index].pixelcount += 1;
-					goals.data[index].x += x;
-					goals.data[index].y += y;
-					for (int x2 = x - 1; x2 >= 0 && pBufferCopy[x2 + 640 * y] &&
-						BALLORGOAL(pBufferCopy[x2 + 640 * y]); --x2) {
-						pBufferCopy[x2 + 640 * y] = index + BIT32;
-						goals.data[index].pixelcount += 1;
-						goals.data[index].x += x;
-						goals.data[index].y += y;
-					}
-					//change all the pixels forward in the line to the object index,
-					//merge the objects if it meets another ball
-					for (++x; x < 640; ++x) {
-						int blue = (pixBuffer[x + y * 640]) & 0xFF, green = (pixBuffer[x + y * 640] >> 8) & 0xFF,
-							red = (pixBuffer[x + y * 640] >> 16) & 0xFF;
-						float hue = HUE(red, green, blue);
-						float saturation = SATURATION(red, green, blue);
-						float value = VALUE(red, green, blue);
-
-						if (!(goalColors.hueMax >= hue && hue >= goalColors.hueMin &&
-							goalColors.saturationMax >= saturation && saturation >= goalColors.saturationMin &&
-							goalColors.valueMax >= value && value >= goalColors.valueMin)) {
-							--x;
-							break;
-						}
-						goals.data[index].pixelcount += 1;
-						goals.data[index].x += x;
-						goals.data[index].y += y;
-						pBufferCopy[x + 640 * y] = index + BIT32;
-						int index2 = OBJECTINDEX(pBufferCopy[x + (y - 1) * 640]);
-						//there are objects with different indexes on the current pixel and below it
-						if (BALLORGOAL(pBufferCopy[x + (y - 1) * 640]) &&
-							index2 && index2 != index) {
-							//copy the pixels and coordinates from the object under the line to the new object
-							goals.data[index].pixelcount += goals.data[index2].pixelcount;
-							goals.data[index].x += goals.data[index2].x;
-							goals.data[index].y += goals.data[index2].y;
-							goals.data[index2] = {};
-							//set the last line of the object from the line under to the proper index, so that when
-							//it is encoutered again, it is interpreted as the correct object
-							for (int x2 = x; x2 <= 640 && BALLORGOAL(pBufferCopy[x2 + (y - 1) * 640]) &&
-								OBJECTINDEX(pBufferCopy[x2 + (y - 1) * 640]) == index2; ++x2) {
-								pBufferCopy[x2 + (y - 1) * 640] = index + BIT32;
-							}
-						}
-					}
-				}
-				else {
-					//if there is a ball pixel to the left
-					if (x > 0 && BALLORGOAL(pBufferCopy[x - 1 + 640 * y]) && pBufferCopy[x - 1 + 640 * y]) {
-						int index = OBJECTINDEX(pBufferCopy[x - 1 + 640 * y]);
-						goals.data[index].x += x;
-						goals.data[index].y += y;
-						goals.data[index].pixelcount += 1;
-						pBufferCopy[x + 640 * y] = index + BIT32;
-					}
-					//start a new object
-					else {
-						++goalCount;
-						goals.count = goalCount;
-						pBufferCopy[x + 640 * y] = goalCount + BIT32;
-						if (goalCount == goals.size)
-							doubleObjectBufferSize(&goals);
-						goals.data[ballCount].pixelcount += 1;
-						goals.data[ballCount].x += x;
-						goals.data[ballCount].y += y;
-					}
-				}
+			//if it is a blue goal pixel
+			else if (goalBlueColors.hueMax >= hue && hue >= goalBlueColors.hueMin &&
+				goalBlueColors.saturationMax >= saturation && saturation >= goalBlueColors.saturationMin &&
+				goalBlueColors.valueMax >= value && value >= goalBlueColors.valueMin) {
+				analyzePixelSurroundings(goalsBlue, goalBlueColors, 1, pixBuffer, pBufferCopy, x, y);
+			}
+			//if it is a yellow goal pixel
+			else if (goalYellowColors.hueMax >= hue && hue >= goalYellowColors.hueMin &&
+				goalYellowColors.saturationMax >= saturation && saturation >= goalYellowColors.saturationMin &&
+				goalYellowColors.valueMax >= value && value >= goalYellowColors.valueMin) {
+				analyzePixelSurroundings(goalsYellow, goalYellowColors, 2, pixBuffer, pBufferCopy, x, y);
 			}
 			//if it is a line pixel
 			else if (lineColors.hueMax >= hue && hue >= lineColors.hueMin &&
@@ -386,20 +280,31 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 	balls.count = ballCount;
 	//printf("balls count: %d\n", balls.count);
 
-	//printf("herenow\n");
 	goalCount = 0;
-	for (int i = 0; i <= goals.count; ++i) {
-		if (goals.data[i].pixelcount >= 100) {
-			goals.data[goalCount] = goals.data[i];
-			goals.data[goalCount].x /= goals.data[goalCount].pixelcount;
-			goals.data[goalCount].y /= goals.data[goalCount].pixelcount;
+	for (int i = 0; i <= goalsBlue.count; ++i) {
+		if (goalsBlue.data[i].pixelcount >= 100) {
+			goalsBlue.data[goalCount] = goalsBlue.data[i];
+			goalsBlue.data[goalCount].x /= goalsBlue.data[goalCount].pixelcount;
+			goalsBlue.data[goalCount].y /= goalsBlue.data[goalCount].pixelcount;
 			//printf("x %d y %d pix %d\n", balls.data[ballCount].x, 
 			//	balls.data[ballCount].y, balls.data[ballCount].pixelcount);
 			++goalCount;
 		}
 	}
-	goals.count = goalCount;
-	//printf("herenow2\n");
+	goalsBlue.count = goalCount;
+
+	goalCount = 0;
+	for (int i = 0; i <= goalsYellow.count; ++i) {
+		if (goalsYellow.data[i].pixelcount >= 100) {
+			goalsYellow.data[goalCount] = goalsYellow.data[i];
+			goalsYellow.data[goalCount].x /= goalsYellow.data[goalCount].pixelcount;
+			goalsYellow.data[goalCount].y /= goalsYellow.data[goalCount].pixelcount;
+			//printf("x %d y %d pix %d\n", balls.data[ballCount].x, 
+			//	balls.data[ballCount].y, balls.data[ballCount].pixelcount);
+			++goalCount;
+		}
+	}
+	goalsYellow.count = goalCount;
 
 	//get the lines from the Hough transform accumulator
 	for (int angle = 0; angle < 150; ++angle) {
@@ -428,10 +333,15 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 	ballsShare.count = balls.count;
 	CopyMemory(ballsShare.data, balls.data, balls.count*sizeof(objectInfo));
 
-	while (goals.count >= goalsShare.size)
-		doubleObjectBufferSize(&goalsShare);
-	goalsShare.count = goals.count;
-	CopyMemory(goalsShare.data, goals.data, goals.count*sizeof(objectInfo));
+	while (goalsBlue.count >= goalsBlueShare.size)
+		doubleObjectBufferSize(&goalsBlueShare);
+	goalsBlueShare.count = goalsBlue.count;
+	CopyMemory(goalsBlueShare.data, goalsBlue.data, goalsBlue.count*sizeof(objectInfo));
+
+	while (goalsYellow.count >= goalsYellowShare.size)
+		doubleObjectBufferSize(&goalsYellowShare);
+	goalsYellowShare.count = goalsYellow.count;
+	CopyMemory(goalsYellowShare.data, goalsYellow.data, goalsYellow.count*sizeof(objectInfo));
 
 	while (lines.count >= linesShare.size)
 		doubleObjectBufferSize((objectCollection*)&linesShare);
@@ -553,13 +463,16 @@ public:
 			analyzeImage(Time, pBuffer, BufferLen);
 			//prints(L"analyzed %d\n", balls.count);
 			for (int i = 0; i < balls.count; ++i) {
-				drawCross(balls.data[i].x, balls.data[i].y, 0xFFFFFF, g_pBuffer);
+				drawCross(balls.data[i].x, balls.data[i].y, 0xFF0000, g_pBuffer); //red
 			}
-			for (int i = 0; i < goals.count; ++i) {
-				drawCross(goals.data[i].x, goals.data[i].y, 0x0, g_pBuffer);
+			for (int i = 0; i < goalsBlue.count; ++i) {
+				drawCross(goalsBlue.data[i].x, goalsBlue.data[i].y, 0x0000FF, g_pBuffer); //blue
+			}
+			for (int i = 0; i < goalsYellow.count; ++i) {
+				drawCross(goalsYellow.data[i].x, goalsYellow.data[i].y, 0xFFFF00, g_pBuffer); //yellow
 			}
 			for (int i = 0; i < lines.count; ++i) {
-				drawLine(lines.data[i].angle, lines.data[i].radius, 0x000000FF, g_pBuffer);
+				drawLine(lines.data[i].angle, lines.data[i].radius, 0xCC00CC, g_pBuffer); //purple
 			}
 			//drawLine(4, 52, 0x000000FF, g_pBuffer);
 			SetEvent(newImageAnalyzed);
@@ -596,19 +509,24 @@ void analyzeTest() {
 
 DWORD WINAPI GUICamera(LPVOID lpParameter)
 {
+	//initialize structs and buffers:
+	currentID = (char*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 16);
 	readFromFileColorThresholds();
 
-	//initialize structs and buffers:
 	balls.data = (objectInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(objectInfo) * 128);
 	balls.size = 128, balls.count = 0;
-	goals.data = (objectInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(objectInfo) * 128);
-	goals.size = 128, goals.count = 0;
+	goalsBlue.data = (objectInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(objectInfo) * 128);
+	goalsBlue.size = 128, goalsBlue.count = 0;
+	goalsYellow.data = (objectInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(objectInfo) * 128);
+	goalsYellow.size = 128, goalsYellow.count = 0;
 	lines.data = (lineInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(lineInfo) * 128);
 	lines.size = 128, lines.count = 0;
 	ballsShare.data = (objectInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(objectInfo) * 128);
 	ballsShare.size = 128, ballsShare.count = 0;
-	goalsShare.data = (objectInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(objectInfo) * 128);
-	goalsShare.size = 128, goalsShare.count = 0;
+	goalsBlueShare.data = (objectInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(objectInfo) * 128);
+	goalsBlueShare.size = 128, goalsBlueShare.count = 0;
+	goalsYellowShare.data = (objectInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(objectInfo) * 128);
+	goalsYellowShare.size = 128, goalsYellowShare.count = 0;
 	linesShare.data = (lineInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(lineInfo) * 128);
 	linesShare.size = 128, linesShare.count = 0;
 	pBufferCopy = (DWORD*)HeapAlloc(GetProcessHeap(), NULL, 640*480*4);
@@ -743,6 +661,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		case ID_BUTTON3:
 			ShowWindow(hwndCalibrate, SW_SHOW);
 			calibrating = TRUE;
+			ResetEvent(calibratingEndSignal);
 			SetEvent(calibratingSignal);
 			return 0;
 		}
@@ -827,7 +746,7 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 	{
 		//first adjust the window position, rc is the size of the client area
 		RECT rc;
-		rc.left = 0, rc.top = 0, rc.right = 400, rc.bottom = 400;
+		rc.left = 0, rc.top = 0, rc.right = 400, rc.bottom = 450;
 		AdjustWindowRectEx(&rc, GetWindowLong(hwnd, GWL_STYLE), FALSE, GetWindowLong(hwnd, GWL_EXSTYLE));
 		SetWindowPos(hwnd, NULL, 300, 100, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER);
 		HINSTANCE hInstance = GetModuleHandle(0);
@@ -835,25 +754,30 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 		//the selections to calibrate colors for the balls, the goals or the lines
 		CreateWindowEx(0, L"BUTTON", L"Select object to calibrate:",
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_GROUPBOX,
-			10, 10, 230, 50, hwnd, (HMENU)ID_RADIOBOXGROUP_OBJECTSELECTOR, hInstance, NULL);
+			10, 10, 300, 50, hwnd, (HMENU)ID_RADIOBOXGROUP_OBJECTSELECTOR, hInstance, NULL);
 		ballsRadioButton = CreateWindowEx(0, L"BUTTON", L"Balls",
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_AUTORADIOBUTTON | WS_GROUP,
 			10 + 10, 25, 70, 30, hwnd, (HMENU)ID_RADIOBOX_BALLS, hInstance, NULL);
 		if(activeColors == &ballColors)
 			SendMessage(ballsRadioButton, BM_SETCHECK, BST_CHECKED, 0);
-		goalsRadioButton = CreateWindowEx(0, L"BUTTON", L"Goals",
+		goalsBlueRadioButton = CreateWindowEx(0, L"BUTTON", L"GoalsB",
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_AUTORADIOBUTTON,
-			10 + 10 + 70, 25, 70, 30, hwnd, (HMENU)ID_RADIOBOX_GOALS, hInstance, NULL);
-		if (activeColors == &goalColors)
-			SendMessage(goalsRadioButton, BM_SETCHECK, BST_CHECKED, 0);
+			10 + 10 + 70, 25, 80, 30, hwnd, (HMENU)ID_RADIOBOX_GOALSBLUE, hInstance, NULL);
+		if (activeColors == &goalBlueColors)
+			SendMessage(goalsBlueRadioButton, BM_SETCHECK, BST_CHECKED, 0);
+		goalsYellowRadioButton = CreateWindowEx(0, L"BUTTON", L"GoalsY",
+			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_AUTORADIOBUTTON,
+			10 + 10 + 150, 25, 80, 30, hwnd, (HMENU)ID_RADIOBOX_GOALSYELLOW, hInstance, NULL);
+		if (activeColors == &goalYellowColors)
+			SendMessage(goalsYellowRadioButton, BM_SETCHECK, BST_CHECKED, 0);
 		linesRadioButton = CreateWindowEx(0, L"BUTTON", L"Lines",
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_AUTORADIOBUTTON,
-			10 + 10 + 140, 25, 70, 30, hwnd, (HMENU)ID_RADIOBOX_LINES, hInstance, NULL);
+			10 + 10 + 230, 25, 70, 30, hwnd, (HMENU)ID_RADIOBOX_LINES, hInstance, NULL);
 		if (activeColors == &lineColors)
 			SendMessage(linesRadioButton, BM_SETCHECK, BST_CHECKED, 0);
-		whitenCheckBox = CreateWindowEx(0, L"BUTTON", L"Whiten selection",
+		whitenCheckBox = CreateWindowEx(0, L"BUTTON", L"Whiten?",
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
-			10 + 10 + 230, 25, 130, 30, hwnd, (HMENU)ID_CHECKBOX_WHITEN, hInstance, NULL);
+			10 + 10 + 300, 25, 80, 30, hwnd, (HMENU)ID_CHECKBOX_WHITEN, hInstance, NULL);
 		if (whitenThresholdPixels)
 			SendMessage(linesRadioButton, BM_SETCHECK, BST_CHECKED, 0);
 
@@ -898,13 +822,25 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 		if (currentCalibratorSetting == maximum)
 			SendMessage(maxRadioButton, BM_SETCHECK, BST_CHECKED, 0);
 
+		//the radio data
+		radioCheckBox = CreateWindowEx(0, L"BUTTON", L"Radio?  ID:",
+			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
+			10 + 10 , 360, 90, 30, hwnd, (HMENU)ID_CHECKBOX_RADIO, hInstance, NULL);
+		if (listenToRadio)
+			SendMessage(radioCheckBox, BM_SETCHECK, BST_CHECKED, 0);
+		hwndEditID = CreateWindowExW(
+			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | ES_LEFT,
+			10 + 10 + 95, 365, 80, 25, hwnd, (HMENU)ID_EDIT_ID, hInstance, NULL);
+		SendMessage(hwndEditID, EM_SETLIMITTEXT, 2, 0);
+		SetWindowTextA(hwndEditID, currentID);
+
 		//the buttons
 		CreateWindowEx(0, L"BUTTON", L"DONE", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
-			50, 360, 100, 30, hwnd, (HMENU)ID_BUTTON_DONE, hInstance, NULL);
+			50, 410, 100, 30, hwnd, (HMENU)ID_BUTTON_DONE, hInstance, NULL);
 		CreateWindowEx(0, L"BUTTON", L"SAVE", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
-			150, 360, 100, 30, hwnd, (HMENU)ID_BUTTON_SAVE, hInstance, NULL);
+			150, 410, 100, 30, hwnd, (HMENU)ID_BUTTON_SAVE, hInstance, NULL);
 		CreateWindowEx(0, L"BUTTON", L"RESET", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
-			250, 360, 100, 30, hwnd, (HMENU)ID_BUTTON_RESET, hInstance, NULL);
+			250, 410, 100, 30, hwnd, (HMENU)ID_BUTTON_RESET, hInstance, NULL);
 		
 		return 0;
 	}
@@ -916,12 +852,14 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 	case WM_DESTROY:
 		ShowWindow(hwnd, SW_HIDE);
 		calibrating = FALSE;
-		ResetEvent(calibratingSignal);
+		//ResetEvent(calibratingSignal);
+		//SetEvent(startSignal);
 		return 0;
 	case WM_CLOSE:
 		ShowWindow(hwnd, SW_HIDE);
 		calibrating = FALSE;
 		ResetEvent(calibratingSignal);
+		SetEvent(calibratingEndSignal);
 		return 0;
 	case WM_COMMAND: //if a button is pressed
 		switch (LOWORD(wParam)) {
@@ -935,8 +873,18 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 			}
 			setSlidersToValues(activeColors);
 			return 0;
-		case ID_RADIOBOX_GOALS:
-			activeColors = &goalColors;
+		case ID_RADIOBOX_GOALSBLUE:
+			activeColors = &goalBlueColors;
+			if (currentCalibratorSetting == minimum) {
+				SendMessage(hwndCalibrate, WM_COMMAND, ID_RADIOBOX_MIN, 0);
+			}
+			else {
+				SendMessage(hwndCalibrate, WM_COMMAND, ID_RADIOBOX_MAX, 0);
+			}
+			setSlidersToValues(activeColors);
+			return 0;
+		case ID_RADIOBOX_GOALSYELLOW:
+			activeColors = &goalYellowColors;
 			if (currentCalibratorSetting == minimum) {
 				SendMessage(hwndCalibrate, WM_COMMAND, ID_RADIOBOX_MIN, 0);
 			}
@@ -976,14 +924,10 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 			activeColors->saturationMin = 0, activeColors->saturationMax = 1;
 			activeColors->valueMin = 0, activeColors->valueMax = 1;
 			if (currentCalibratorSetting == minimum) {
-				activeColors->hue = 0;
-				activeColors->saturation = 0;
-				activeColors->value = 0;
+				SendMessage(hwndCalibrate, WM_COMMAND, ID_RADIOBOX_MIN, 0);
 			}
 			else {
-				activeColors->hue = 6;
-				activeColors->saturation = 1;
-				activeColors->value = 1;
+				SendMessage(hwndCalibrate, WM_COMMAND, ID_RADIOBOX_MAX, 0);
 			}
 			setSlidersToValues(activeColors);
 			return 0;
@@ -1001,8 +945,26 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 			activeColors->value = activeColors->valueMax;
 			setSlidersToValues(activeColors);
 			return 0;
+		case ID_CHECKBOX_RADIO:
+			if (SendMessage(radioCheckBox, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+				listenToRadio = 1;
+			}
+			else {
+				listenToRadio = 0;
+			}
+			return 0;
+		case ID_EDIT_ID:
+			switch (HIWORD(wParam)) {
+			case EN_CHANGE:
+				wchar_t buffer[4];
+				int charsConverted;
+				GetWindowTextW(hwndEditID, buffer, 4);
+				wcstombs_s((size_t*)&charsConverted, currentID, 4, buffer, 3); //convert to char from wchar_t
+				for (int i = GetWindowTextLengthW(hwndEditID); i < 4; ++i)
+					currentID[i] = 0;
+				prints(L"text %S\n", currentID);
+			}
 		}
-
 		break;
 	case WM_HSCROLL: //if a slider is moved
 		if (LOWORD(wParam) == TB_THUMBTRACK || LOWORD(wParam) == TB_ENDTRACK 
@@ -1126,7 +1088,7 @@ LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 		OnGraphEvent(hwnd);
 		return 0;
 	case WM_LBUTTONDOWN:
-		if (calibrating) {
+		if (calibrating) { //if calibrating, choose the HSV thresholds by a mouse click on the left video
 			POINTS click = MAKEPOINTS(lParam);
 			int x = click.x;
 
@@ -1135,7 +1097,24 @@ LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 			int colors = ((DWORD*)DShowBuffer)[x + y * 640];
 			int blue = (colors & 0xFF),  green = (colors & 0xFF00)>>8, red = (colors & 0xFF0000) >> 16;
-			prints(L"red %d green %d blue %d\n", red, green, blue);
+			float hue = HUE(red, green, blue), saturation = SATURATION(red, green, blue), value = VALUE(red, green, blue);
+			float halfWidth = 0.1; //the factor by which to either side the sliders are moved
+			activeColors->hueMax = hue + 6 * halfWidth > 6 ? 6 : hue + 6 * halfWidth;
+			activeColors->hueMin = hue - 6 * halfWidth < 0 ? 0 : hue - 6 * halfWidth;
+			activeColors->saturationMax = saturation + 1 * halfWidth > 1 ? 1 : saturation + 1 * halfWidth;
+			activeColors->saturationMin = saturation - 1 * halfWidth < 0 ? 0 : saturation - 1 * halfWidth;
+			activeColors->valueMax = value + 1 * halfWidth > 1 ? 1 : value + 1 * halfWidth;
+			activeColors->valueMin = value - 1 * halfWidth < 0 ? 0 : value - 1 * halfWidth;
+			
+			if (currentCalibratorSetting == minimum) { //set the sliders to the new values
+				SendMessage(hwndCalibrate, WM_COMMAND, ID_RADIOBOX_MIN, 0);
+			}
+			else {
+				SendMessage(hwndCalibrate, WM_COMMAND, ID_RADIOBOX_MAX, 0);
+			}
+			setSlidersToValues(activeColors);
+
+			prints(L"clicked on red %d green %d blue %d\n", red, green, blue);
 		}
 		break;
 	}
@@ -1238,12 +1217,12 @@ void InitVideo(HWND hwnd) {
 	VIDEOINFOHEADER* videoInfoHeader = NULL;
 	while (hr = ppEnum->Next(1, &pmt, NULL), hr == 0) {
 		videoInfoHeader = (VIDEOINFOHEADER*)pmt->pbFormat;
-		        printf("Width: %d, Height: %d, BitCount: %d, Compression: %X\n",
-		               videoInfoHeader->bmiHeader.biWidth,videoInfoHeader->bmiHeader.biHeight,
-		               videoInfoHeader->bmiHeader.biBitCount,videoInfoHeader->bmiHeader.biCompression);
-		        printf("Image size: %d, Bitrate KB: %.2f, FPS: %.2f\n",
-		               videoInfoHeader->bmiHeader.biSizeImage,videoInfoHeader->dwBitRate/(8.0*1000),
-		               10000000.0/(videoInfoHeader->AvgTimePerFrame));
+		        //prints(L"Width: %d, Height: %d, BitCount: %d, Compression: %X\n",
+		        //       videoInfoHeader->bmiHeader.biWidth,videoInfoHeader->bmiHeader.biHeight,
+		        //       videoInfoHeader->bmiHeader.biBitCount,videoInfoHeader->bmiHeader.biCompression);
+		        //prints(L"Image size: %d, Bitrate KB: %.2f, FPS: %.2f\n",
+		        //       videoInfoHeader->bmiHeader.biSizeImage,videoInfoHeader->dwBitRate/(8.0*1000),
+		        //       10000000.0/(videoInfoHeader->AvgTimePerFrame));
 		if (videoInfoHeader->bmiHeader.biWidth == 640 &&
 			videoInfoHeader->bmiHeader.biBitCount >= 16) {
 			prints(L"Chosen image format:\n");
@@ -1485,11 +1464,14 @@ void saveToFileColorThresholds() {
 		OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 	DWORD numberOfBytesRead;
 	WriteFile(dataFile, &ballColors, sizeof(ballColors), &numberOfBytesRead, NULL);
-	WriteFile(dataFile, &goalColors, sizeof(goalColors), &numberOfBytesRead, NULL);
+	WriteFile(dataFile, &goalBlueColors, sizeof(goalBlueColors), &numberOfBytesRead, NULL);
+	WriteFile(dataFile, &goalYellowColors, sizeof(goalYellowColors), &numberOfBytesRead, NULL);
 	WriteFile(dataFile, &lineColors, sizeof(lineColors), &numberOfBytesRead, NULL);
 	WriteFile(dataFile, &currentCalibratorSetting, sizeof(currentCalibratorSetting), &numberOfBytesRead, NULL);
 	WriteFile(dataFile, &activeColors, sizeof(activeColors), &numberOfBytesRead, NULL);
 	WriteFile(dataFile, &whitenThresholdPixels, sizeof(whitenThresholdPixels), &numberOfBytesRead, NULL);
+	WriteFile(dataFile, &listenToRadio, sizeof(listenToRadio), &numberOfBytesRead, NULL);
+	WriteFile(dataFile, currentID, 4, &numberOfBytesRead, NULL);
 	
 	CloseHandle(dataFile);
 }
@@ -1499,11 +1481,14 @@ void readFromFileColorThresholds() {
 		OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 	DWORD numberOfBytesRead;
 	ReadFile(dataFile, &ballColors, sizeof(ballColors), &numberOfBytesRead, NULL);
-	ReadFile(dataFile, &goalColors, sizeof(goalColors), &numberOfBytesRead, NULL);
+	ReadFile(dataFile, &goalBlueColors, sizeof(goalBlueColors), &numberOfBytesRead, NULL);
+	ReadFile(dataFile, &goalYellowColors, sizeof(goalYellowColors), &numberOfBytesRead, NULL);
 	ReadFile(dataFile, &lineColors, sizeof(lineColors), &numberOfBytesRead, NULL);
 	ReadFile(dataFile, &currentCalibratorSetting, sizeof(currentCalibratorSetting), &numberOfBytesRead, NULL);
 	ReadFile(dataFile, &activeColors, sizeof(activeColors), &numberOfBytesRead, NULL);
 	ReadFile(dataFile, &whitenThresholdPixels, sizeof(whitenThresholdPixels), &numberOfBytesRead, NULL);
+	ReadFile(dataFile, &listenToRadio, sizeof(listenToRadio), &numberOfBytesRead, NULL);
+	ReadFile(dataFile, currentID, 4, &numberOfBytesRead, NULL);
 	CloseHandle(dataFile);
 }
 

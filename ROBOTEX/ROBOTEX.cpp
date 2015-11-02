@@ -7,14 +7,22 @@
 #define PI (3.1415927)
 #define SQRT2 (1.4142135)
 
-HANDLE readySignal = CreateEvent(NULL, FALSE, FALSE, NULL);
-HANDLE newImageAnalyzed = CreateEvent(NULL, FALSE,FALSE,NULL);
+HANDLE readySignal = CreateEventW(NULL, FALSE, FALSE, NULL);
+HANDLE newImageAnalyzed = CreateEventW(NULL, FALSE,FALSE,NULL);
 HANDLE startSignal = CreateEventW(NULL, FALSE, FALSE, NULL);
 HANDLE stopSignal = CreateEventW(NULL, FALSE, FALSE, NULL);
 HANDLE calibratingSignal = CreateEventW(NULL, TRUE, FALSE, NULL);
+HANDLE calibratingEndSignal = CreateEventW(NULL, TRUE, FALSE, NULL);
 HANDLE GUIThread;
 HANDLE hCOMDongle;
 HANDLE hCOMRadio;
+OVERLAPPED osReader = { };
+OVERLAPPED osWrite = { };
+OVERLAPPED osStatus = { };
+DWORD dwCommEvent = 0; //variable for the WaitCommEvent, stores the type of the event that occurred
+int listenToRadio; //whether to listen to commands from the radio or not
+char* currentID;
+drivingState currentDrivingState;
 extern objectCollection ballsShare, goalsShare;
 extern HANDLE writeMutex;
 extern BOOLEAN calibrating;
@@ -25,6 +33,11 @@ void initUSBRadio();
 void setSpeed(float speed, float angle, float angularVelocity);
 void testSingleBallTrack();
 void test();
+void receiveCommand();
+void read();
+void checkCommand(char* readBuffer);
+boolean validCommand(char* readBuffer);
+void readCOM(HANDLE hCOM, char* readBuffer, DWORD bytesToRead, DWORD &bytesRead);
 
 struct vector {
 	float e1;
@@ -42,11 +55,6 @@ int main() {
 	//initialize the radio
 	//initUSBRadio();
 
-	//initialize the COM port of the dongle
-	initCOMPort();
-
-	//testSingleBallTrack();
-
 	test();
 
 	//TODO control the robot...
@@ -56,26 +64,44 @@ int main() {
 }
 
 void test() {
-	while (1) {
-		WaitForSingleObject(startSignal, INFINITE);
-		prints(L"Started\n");
-		testSingleBallTrack();
+	initCOMPort();
+	initUSBRadio();
+	HANDLE waitHandles[2] = {osStatus.hEvent, startSignal };
+	while (true) {
+		switch (WaitForMultipleObjects(2, waitHandles, FALSE, 1000)) {
+		case WAIT_OBJECT_0:
+			prints(L"radio event %X\n", dwCommEvent);
+			receiveCommand();
+			WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus);
+			break;
+		case WAIT_OBJECT_0+1:
+			testSingleBallTrack();
+		}
 	}
 }
 
 void testSingleBallTrack() {
-	int currentx, currenty, ballCount;
-	while (WaitForSingleObject(newImageAnalyzed, 0) == WAIT_OBJECT_0); //wait for the first image to come
-
-	WaitForSingleObject(writeMutex, INFINITE);
-	currentx = ballsShare.data[0].x, currenty = ballsShare.data[0].y, ballCount = ballsShare.count;
-	ReleaseMutex(writeMutex);
-
+	HANDLE waitHandles[4] = { newImageAnalyzed, stopSignal, osStatus.hEvent, calibratingSignal };
+	int currentx = 0, currenty = 0, ballCount = 0;
+	int timeOut = 50; //timeout after sending each command
 	while (true) {
-		if (WaitForSingleObject(stopSignal, 50) == WAIT_OBJECT_0) {
+		switch (WaitForMultipleObjects(4, waitHandles, FALSE, timeOut)) {
+		case WAIT_OBJECT_0: //new image analyzed
+			continue;
+		case WAIT_OBJECT_0 +1: //stop signal
 			setSpeed(0, 0, 0);
-			prints(L"Stopped\n\n");
+			ResetEvent(startSignal);
 			return;
+		case WAIT_OBJECT_0 +2: //start of a new command from the radio detected
+			//ResetEvent(osStatus.hEvent);
+			prints(L"radio event %X\n", dwCommEvent);
+			receiveCommand();
+			WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus);
+			break;
+		case WAIT_OBJECT_0 + 3: //calibrating signal
+			setSpeed(0, 0, 0);
+			WaitForSingleObject(calibratingEndSignal, INFINITE);
+			continue;
 		}
 		if (ballCount == 0) {
 			setSpeed(0, 0, -60);
@@ -89,14 +115,63 @@ void testSingleBallTrack() {
 		else {
 			setSpeed(0.3, 0, 0);
 		}
-		if (WaitForSingleObject(newImageAnalyzed, 0) == WAIT_OBJECT_0) {
-			WaitForSingleObject(writeMutex, INFINITE);
-			currentx = ballsShare.data[0].x, currenty = ballsShare.data[0].y, ballCount = ballsShare.count;
-			ReleaseMutex(writeMutex);
-		}
 	}
 }
 
+void respondACK() {
+	char response[16] = {};
+	DWORD bytesWritten = 0;
+	sprintf_s(response, "a%sACK------", currentID);
+	if (!WriteFile(hCOMRadio, response, 12, &bytesWritten, &osWrite)) {
+		if (GetLastError() != ERROR_IO_PENDING) {
+			prints(L"USB radio ACK response failed with error %X\n", GetLastError());
+		}
+		if (!GetOverlappedResult(hCOMRadio, &osWrite, &bytesWritten, TRUE)) {
+			prints(L"USB ACK radio write failed with error %X\n", GetLastError());
+		}
+	}
+	if (bytesWritten != 12) {
+		prints(L"ACK write timeout\n");
+	}
+
+	prints(L"Responded: %S\n", response);
+}
+
+void receiveCommand() { //the character 'a' was received from the radio, now read the buffer, find all the a-s and check for commands
+	DWORD bytesRead = 0;
+	DWORD start = 0, length = 10; //the current position in the buffer and the length of the unread buffer
+	char readBuffer[128] = {};
+	readCOM(hCOMRadio, readBuffer, 10, bytesRead);
+	while (true) {
+		if (readBuffer[start] != 'a') {
+			++start;
+			--length;
+		}
+		else {
+			if (length < 12) {
+				readCOM(hCOMRadio, readBuffer + start, 10, bytesRead);
+				if (bytesRead + length < 12) {
+					return;
+				}
+				if (!validCommand(readBuffer + start)) {
+					++start;
+					--length;
+				}
+				else {
+					checkCommand(readBuffer + start);
+				}
+			}
+		}
+		if (length == 0) {
+			readCOM(hCOMRadio, readBuffer + start, 10, bytesRead);
+			length = bytesRead;
+		}
+		if (start > 40) {
+			CopyMemory(readBuffer, readBuffer + start, length);
+			start = 0;
+		}
+	}
+}
 
 
 //initializes the COM ports to the right handles; not needed, we have a dongle
@@ -139,39 +214,46 @@ void initCOMPort() {
 		sendString(hCOMDongle, "4:fs0\n");
 	}
 	prints(L"COM init end\n\n");
-
-	//this is not needed anymore, we have a dongle
-	////read all the COM ports from the registry
-	//HKEY hKey;
-	//if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"HARDWARE\\DEVICEMAP\\SERIALCOMM", NULL, KEY_READ, &hKey) != ERROR_SUCCESS) {
-	//	prints(L"REGISTRY COM PORT LIST READING ERROR\n");
-	//	return;
-	//}
-	//wchar_t valueName[64] = {};
-	//wchar_t dataBuffer[256] = {};
-	//DWORD valueNameLen;
-	//DWORD dataLen;
-	//HANDLE COMPorts[4] = { hCOM1,hCOM2,hCOM3,hCOM4 }; //used to assign the com ports to the correct engines
-	//for (int i = 0;RegEnumValueW(hKey, i, (LPWSTR)&valueName, &valueNameLen, NULL,
-	//	NULL, (LPBYTE)&dataBuffer, &dataLen) != ERROR_NO_MORE_ITEMS;++i) {
-	//	wprintf(L"%d %d %s\n", i, dataLen, dataBuffer);
-	//	//open the COM port and ask its ID, so that we know which wheel it is
-	//	HANDLE hComm = CreateFile(dataBuffer, GENERIC_READ | GENERIC_WRITE, 0, 0,
-	//		OPEN_EXISTING, 0, 0);
-	//	if (hComm == INVALID_HANDLE_VALUE)
-	//		prints(L"INVALID COM HANDLE %s\n", dataBuffer);
-	//	else {
-	//		sendString(hComm, "?\n");
-	//		receiveString(hComm, (char*)dataBuffer);
-	//		char id = *((char*)dataBuffer);
-	//		COMPorts[id - 1] = hComm; //assigns the port to the correct handle
-	//	}
-
-	//}
 }
 
-void checkCommand() {
+boolean validCommand(char* readBuffer) {
+	char tempBuffer[12] = {};
+	CopyMemory(tempBuffer, readBuffer, 12);
+	if (strcmp(tempBuffer, "STOP-----") != 0 && strcmp(tempBuffer, "START----") != 0)
+		return FALSE;
+	if (tempBuffer[0] != 'a')
+		return FALSE;
+	if (tempBuffer[1] != 'A' && tempBuffer[1] != 'B')
+		return FALSE;
+	char* allowed = "XABCD";
+	for (int i = 0; i < strlen(allowed); ++i) {
+		if (allowed[i] == tempBuffer[2]) {
+			prints(L"Received from radio: %S\n", tempBuffer);
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
 
+void checkCommand(char* readBuffer) {
+	char tempBuffer[12] = {};
+	CopyMemory(tempBuffer, readBuffer, 12);
+	if (validCommand(readBuffer)) {
+		if (readBuffer[1] == currentID[0]) {
+			if (readBuffer[2] == 'X' || readBuffer[2] == currentID[1]) {
+				if (strcmp(tempBuffer, "STOP-----") == 0) {
+					ResetEvent(startSignal);
+					SetEvent(stopSignal);
+					respondACK();
+				}
+				else if (strcmp(tempBuffer, "START----") == 0) {
+					ResetEvent(stopSignal);
+					SetEvent(startSignal);
+					respondACK();
+				}
+			}
+		}
+	}
 }
 
 
@@ -214,14 +296,14 @@ void setSpeed(float speed, float angle, float angularVelocity) {
 	const float realToPlateUnits = (18.75 * 64) / 62.5;
 	float vx = speed*cosf(angle * PI / 180);
 	float vy = speed*sinf(angle * PI / 180);
-	prints(L"speed %.2f angle %.2f angularvelocity %.2f vx %.2f vy %.2f\n", speed, angle, angularVelocity, vx, vy);
+
 	int wheel1Speed = (int)(((vx - vy) / (wheelRadius * SQRT2 * 2 * PI) - angularVelocity/360 * baseRadius / wheelRadius)*realToPlateUnits);
 	int wheel2Speed = (int)(((vx + vy) / (wheelRadius * SQRT2 * 2 * PI) + angularVelocity/360 * baseRadius / wheelRadius)*realToPlateUnits);
 	int wheel3Speed = (int)(((vx + vy) / (wheelRadius * SQRT2 * 2 * PI) - angularVelocity/360 * baseRadius / wheelRadius)*realToPlateUnits);
 	int wheel4Speed = (int)(((vx - vy) / (wheelRadius * SQRT2 * 2 * PI) + angularVelocity/360 * baseRadius / wheelRadius)*realToPlateUnits);
 	if (wheel1Speed > 190 || wheel2Speed > 190 || wheel3Speed > 190 || wheel4Speed > 190)
 		prints(L"Wheel speed overflow.");
-	prints(L"%d %d %d %d\n", wheel1Speed, wheel2Speed, wheel3Speed, wheel4Speed);
+
 	setEngineRotation(1, wheel1Speed);
 	setEngineRotation(2, wheel2Speed);
 	setEngineRotation(3, wheel3Speed);
@@ -271,11 +353,20 @@ float calculateDirection(lineInfo line) {
 }
 
 void initUSBRadio() {
-	DCB dcb;
-	HANDLE hCOMRadio;
-	hCOMRadio = CreateFile(L"\\\\.\\COM5", GENERIC_READ | GENERIC_WRITE, 0, 0,
-		OPEN_EXISTING, 0, 0);
+	COMMTIMEOUTS timeouts;
+	timeouts.ReadIntervalTimeout = 5;
+	timeouts.ReadTotalTimeoutConstant = 5;
+	timeouts.ReadTotalTimeoutMultiplier = 5;
+	timeouts.WriteTotalTimeoutConstant = 10;
+	timeouts.WriteTotalTimeoutMultiplier = 5;
 
+	osReader.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+	osWrite.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+	osStatus.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+
+	DCB dcb;
+	hCOMRadio = CreateFile(L"\\\\.\\COM5", GENERIC_READ | GENERIC_WRITE, 0, 0,
+		OPEN_EXISTING, FILE_FLAG_OVERLAPPED, 0);
 	if (hCOMRadio == INVALID_HANDLE_VALUE) {
 		prints(L"ERROR OPENING USB COM PORT\N");
 	}
@@ -286,39 +377,91 @@ void initUSBRadio() {
 	{
 		prints(L"GetCommState failed with error %d.\n", GetLastError());
 	}
-	prints(L"Baudrate %d\n", dcb.BaudRate);
+	prints(L"Baudrate %d abort on error %d\n", dcb.BaudRate, dcb.fAbortOnError);
 
 	dcb.BaudRate = 9600;
 	dcb.ByteSize = 8;
 	dcb.Parity = NOPARITY;
 	dcb.StopBits = ONESTOPBIT;
+	dcb.EvtChar = 'a';
 
 	if (!SetCommState(hCOMRadio, &dcb))
 	{
 		prints(L"SetCommState failed with error %d.\n", GetLastError());
 	}
 
+	if (!SetCommTimeouts(hCOMRadio, &timeouts)) {
+		prints(L"SetCommTimeouts failed with error %d.\n", GetLastError());
+	}
 
-	char* buffer = "+++\0";
+	if (!SetCommMask(hCOMRadio, EV_RXFLAG)) {
+		prints(L"SetCommMask failed with error %d.\n", GetLastError());
+	}
+
+	if (WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus)) {
+		prints(L"Wait Com event %X\n", dwCommEvent);
+	}
+	else {
+		if (GetLastError() != ERROR_IO_PENDING) {
+			prints(L"WaitCommEvent failed with error %d\n", GetLastError());
+		}
+	}
+}
+
+void testUSBOK() {
+	char* buffer = "+++";
 	DWORD bytesRead = 0;
-	WriteFile(hCOMRadio, buffer, 3, &bytesRead, NULL);
-	prints(L"Wrote %d bytes.\n", bytesRead);
+	DWORD bytesWritten = 0;
+	WriteFile(hCOMRadio, buffer, 3, &bytesRead, &osWrite);
+	if (!GetOverlappedResult(hCOMRadio, &osWrite, &bytesWritten, TRUE)) {
+		prints(L"Init USB radio write failed\n");
+	}
+	if (bytesWritten != 3) {
+		prints(L"Init write timeout\n");
+	}
+
+	prints(L"Init wrote %d bytes.\n", bytesWritten);
 
 	char readBuffer[128] = {};
 	bytesRead = 0;
-	Sleep(1000);
-	if (!ReadFile(hCOMRadio, readBuffer, 2, &bytesRead, NULL))
-		prints(L"Read failed with error %X.\n", GetLastError());
 
-	prints(L"Read %d bytes.\n", bytesRead);
-
-	prints(L"%S\n", readBuffer);
-	if (lstrcmpA(readBuffer, "OK") == 0) {
-		prints(L"USB Radio initialization successful.\n");
+	ReadFile(hCOMRadio, readBuffer, 2, &bytesRead, &osReader);
+	int i;
+	for (i = 0; i < 20;++i) {
+		if (!GetOverlappedResult(hCOMRadio, &osReader, &bytesRead, TRUE)) {
+			prints(L"Init read failed, error %d\n", GetLastError());
+			break;
+		}
+		if (bytesRead != 2) {
+			ReadFile(hCOMRadio, readBuffer, 2, &bytesRead, &osReader);
+		}
+		else {
+			if (lstrcmpA(readBuffer, "OK") == 0) {
+				prints(L"USB Radio initialization successful.\r\n\r\n");
+			}
+			else
+			{
+				prints(L"Received something else from the radio.\r\n\r\n");
+			}
+			break;
+		}
+		Sleep(100);
 	}
-	else
-	{
-		prints(L"Did not receive OK from the radio.\n");
+	if (i == 20)
+		prints(L"Did not receive OK in 2 seconds from the radio\n");
+}
+
+//read from the OVERLAPPED COM-port until timeouts set when initializing
+void readCOM(HANDLE hCOM, char* readBuffer, DWORD bytesToRead, DWORD &bytesRead) {
+	if (!ReadFile(hCOM, readBuffer, bytesToRead, &bytesRead, &osReader)) {
+		if (GetLastError() != ERROR_IO_PENDING) {
+			prints(L"USB radio read failed with error %X\n", GetLastError());
+		}
+		else {
+			if (!GetOverlappedResult(hCOMRadio, &osReader, &bytesRead, TRUE)) {
+				prints(L"USB radio read GetOverlappedResult failed with error %X\n", GetLastError());
+			}
+		}
 	}
 }
 
