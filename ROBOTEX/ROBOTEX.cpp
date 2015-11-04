@@ -7,6 +7,12 @@
 #define PI (3.1415927)
 #define SQRT2 (1.4142135)
 
+float wheelRadius = 3.5 / 100.0; //in meters
+float baseRadius = 14.0 / 100.0; //base radius in meters from the center to the wheel
+float height = 17.0 / 100.0; //height in meters of the camera
+float cameraAngle = 25.0 * PI / 180.0; //the angle that the camera is down with respect to the horizontal, height of camera is 17cm, midpoint of the image is 37 cm away
+float angleOfView = 59.0 * PI / 180.0; //the horizontal angle of view, it saw a 77cm wide rule 67cm away along the floor
+
 HANDLE readySignal = CreateEventW(NULL, FALSE, FALSE, NULL);
 HANDLE newImageAnalyzed = CreateEventW(NULL, FALSE,FALSE,NULL);
 HANDLE startSignal = CreateEventW(NULL, FALSE, FALSE, NULL);
@@ -16,9 +22,11 @@ HANDLE calibratingEndSignal = CreateEventW(NULL, TRUE, FALSE, NULL);
 HANDLE GUIThread;
 HANDLE hCOMDongle;
 HANDLE hCOMRadio;
+int ballsPixelCount = 0, goalsBluePixelCount = 0, goalsYellowPixelCount = 0, linesPixelCount = 0;
 OVERLAPPED osReader = { };
 OVERLAPPED osWrite = { };
 OVERLAPPED osStatus = { };
+
 DWORD dwCommEvent = 0; //variable for the WaitCommEvent, stores the type of the event that occurred
 int listenToRadio; //whether to listen to commands from the radio or not
 char* currentID;
@@ -26,11 +34,16 @@ drivingState currentDrivingState;
 extern objectCollection ballsShare, goalsBlueShare, goalsYellowShare;
 extern HANDLE writeMutex;
 extern BOOLEAN calibrating;
+
 void sendString(HANDLE hComm, char* outputBuffer);
 int receiveString(HANDLE hComm, char* outputBuffer);
 void initCOMPort();
 void initUSBRadio();
-void setSpeed(float speed, float angle, float angularVelocity);
+void setSpeedAngle(float speed, float angle, float angularVelocity);
+void setSpeedAngle(drivingState state);
+void setSpeedXY(float vx, float vy, float angularVelocity);
+void setSpeedXY(drivingState state);
+void setSpeedBoth(drivingState state);
 void testSingleBallTrack();
 void test();
 void receiveCommand();
@@ -38,6 +51,17 @@ void read();
 void checkCommand(char* readBuffer);
 boolean validCommand(char* readBuffer);
 void readCOM(HANDLE hCOM, char* readBuffer, DWORD bytesToRead, DWORD &bytesRead);
+void rotateAroundCenter(float angularVelocity);
+void findNearestObject(int& currentx, int& currenty, objectCollection& objects);
+void findLargestObject(int& currentx, int& currenty, objectCollection& objects);
+void convertToFloorCoordinates(int currentx, int currenty, float& floorX, float& floorY);
+void driveToFloorXY(float floorX, float floorY, float angle);
+void rotateAroundFront(float angularVelocity);
+void rotateAroundFrontAndMoveForward(float angularVelocity, float speedForward);
+bool checkIsBallInDribbler();
+bool isLineInFront();
+
+enum State { lookForBall, lookForGoal, driveToBall, driveToGoal, rotate180 } state;
 
 struct vector {
 	float e1;
@@ -49,24 +73,21 @@ int main() {
 	//Create the GUI in a separate thread
 	GUIThread = CreateThread(NULL, 0, GUICamera, 0, 0, NULL);
 	//Wait for the GUI to initialize
-	WaitForSingleObject(readySignal, INFINITE);
-	prints(L"Testing printing\r\n\r\n");
-	
-	//initialize the radio
-	//initUSBRadio();
+WaitForSingleObject(readySignal, INFINITE);
+prints(L"Testing printing\r\n\r\n");
 
-	test();
+//initialize the state and start testing the robot
+state = lookForBall;
+test();
 
-	//TODO control the robot...
-
-	//Don't exit this thread before the GUI
-	WaitForSingleObject(GUIThread, INFINITE);
+//Don't exit this thread before the GUI
+WaitForSingleObject(GUIThread, INFINITE);
 }
 
 void test() {
 	initCOMPort();
 	initUSBRadio();
-	HANDLE waitHandles[2] = {osStatus.hEvent, startSignal };
+	HANDLE waitHandles[2] = { osStatus.hEvent, startSignal };
 	while (true) {
 		switch (WaitForMultipleObjects(2, waitHandles, FALSE, 1000)) {
 		case WAIT_OBJECT_0:
@@ -74,7 +95,7 @@ void test() {
 			receiveCommand();
 			WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus);
 			break;
-		case WAIT_OBJECT_0+1:
+		case WAIT_OBJECT_0 + 1:
 			prints(L"Start signal arrived.\n");
 			testSingleBallTrack();
 			break;
@@ -84,21 +105,22 @@ void test() {
 
 void testSingleBallTrack() {
 	HANDLE waitHandles[4] = { newImageAnalyzed, stopSignal, osStatus.hEvent, calibratingSignal };
-	int currentx = 0, currenty = 0;
+	int currentx = 320, currenty = 0;
 	int timeOut = 50; //timeout after sending each command
-	int lookForGoal = 0, lookForBall = 1;
-	objectCollection objects;
+	objectCollection goals;
 
 	while (true) {
 		switch (WaitForMultipleObjects(4, waitHandles, FALSE, timeOut)) {
 		case WAIT_OBJECT_0: //new image analyzed
 			break;
-		case WAIT_OBJECT_0 +1: //stop signal
+		case WAIT_OBJECT_0 + 1: //stop signal
 			prints(L"Stop signal arrived.\n");
-			setSpeed(0, 0, 0);
+			currentDrivingState.angle = 0, currentDrivingState.speed = 0, currentDrivingState.vx = 0, 
+				currentDrivingState.vy = 0, currentDrivingState.angularVelocity = 0;
+			setSpeedAngle(currentDrivingState);
 			ResetEvent(startSignal);
 			return;
-		case WAIT_OBJECT_0 +2: //start of a new command from the radio detected
+		case WAIT_OBJECT_0 + 2: //start of a new command from the radio detected
 			//ResetEvent(osStatus.hEvent);
 			prints(L"radio event %X\n", dwCommEvent);
 			receiveCommand();
@@ -106,74 +128,164 @@ void testSingleBallTrack() {
 			continue;
 		case WAIT_OBJECT_0 + 3: //calibrating signal
 			prints(L"Calibrating signal.\n");
-			setSpeed(0, 0, 0);
+			setSpeedAngle(0, 0, 0);
 			WaitForSingleObject(calibratingEndSignal, INFINITE);
 			continue;
 		}
-		if (lookForGoal) {
-			if (currentID[1] == 'A') {
-				objects = goalsBlueShare;
+		rotateAroundFront(20.0);
+		continue;
+		goals = currentID[1] == 'A' ? goalsBlueShare : goalsYellowShare;
+
+		if (state == lookForBall) {
+			if (ballsShare.count == 0) {
+				rotateAroundCenter(-60);
 			}
 			else {
-				objects = goalsYellowShare;
+				state = driveToBall;
 			}
 		}
-		else {
-			objects = ballsShare;
-		}
-		if (objects.count == 0) { //rotate until you find an object
-			if (lookForBall) { //rotate to find the ball
-				currentDrivingState.speed = 0, currentDrivingState.angle = 0, currentDrivingState.angularVelocity = -60;
-				setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
-			}
-			else { //rotate to find the goal
-				currentDrivingState.speed = 0.14*20/180*PI, currentDrivingState.angle = 90, currentDrivingState.angularVelocity = -20;
-				setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
-			}
-		}
-		else {
-			int minDist = (currentx - objects.data[0].x) * (currentx - objects.data[0].x) + (currenty - objects.data[0].y) * (currenty - objects.data[0].y), minIndex = 0;
-			for (int i = 1; i < objects.count; ++i) {
-				int dist = (currentx - objects.data[i].x) * (currentx - objects.data[i].x) + (currenty - objects.data[i].y) * (currenty - objects.data[i].y);
-				if (dist < minDist) {
-					minDist = dist;
-					minIndex = i;
-				}
-			}
-			currentx = objects.data[minIndex].x, currenty = objects.data[minIndex].y;
-			if (currenty < 70 && lookForBall) {
-				lookForBall = 0;
-				lookForGoal = 1;
-				prints(L"Starting to look for goal\n");
+		if (state == driveToBall) {
+			float floorX, floorY;
+			findNearestObject(currentx, currenty, ballsShare);
+			convertToFloorCoordinates(currentx, currenty, floorX, floorY);
+			prints(L"Floor coordinates x: %.2f, y: %.2f\n", floorX, floorY);
+			if (ballsShare.count == 0) {
+				prints(L"Drive state, but ballcount zero, starting to look for ball.\n");
+				state = lookForBall;
 				continue;
 			}
-			if (lookForGoal) {
-				prints(L"Looking for the goal\n");
-				if (abs(currentx - 320) < 40) {
-					currentDrivingState.speed = 0.1, currentDrivingState.angle = 0, currentDrivingState.angularVelocity = 0;
-					setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			if (floorX < 20.0 / 100.0) {
+				state = lookForGoal;
+			}
+			else {
+				driveToFloorXY(floorX, floorY, NULL);
+			}
+		}
+		if (state == lookForGoal) {
+			prints(L"Looking for goal\n");
+			if (checkIsBallInDribbler()) {
+				int x = 0, y = 0;
+				findLargestObject(x, y, goals);
+				x -= 320, y -= 240;
+				if (abs(x) < 30) {
+					state = driveToGoal;
 				}
 				else {
-					float angular = -(currentx - 320) / 320 * 20;
-					currentDrivingState.speed = 0.14 * (angular > 0 ? angular : -angular) / 180 * PI, currentDrivingState.angle = 90, currentDrivingState.angularVelocity = angular;
-					setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+					rotateAroundFront(-60 * tanhf((x - 320) / 130));
 				}
 			}
-			else { //looking for the ball
-				currentDrivingState.angularVelocity = -40.0*(currentx-320)/320;
-				if (currenty < 150) {
-					prints(L"Ball very near\n");
-					currentDrivingState.speed = 0.05;
-				}
-				if (currenty < 180) {
-					prints(L"Ball near\n");
-					currentDrivingState.speed = 0.1;
-				}
-				else
-					currentDrivingState.speed = 0.2;
-				currentDrivingState.angle = 0;
-				setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			else {
+				state = lookForBall;
 			}
+		}
+		if (state == driveToGoal) {
+			if (checkIsBallInDribbler()) {
+				if (goals.count > 0) {
+					if (isLineInFront()) {
+						state = rotate180;
+					}
+					else {
+						int x = 0, y = 0;
+						findLargestObject(x, y, goals);
+						rotateAroundFrontAndMoveForward(-60 * tanhf((x - 320) / 130), 0.1);
+					}
+				}
+				else {
+					state = lookForGoal;
+				}
+			}
+			else{
+				state = lookForBall;
+			}
+		}
+	}
+}
+
+bool isLineInFront() {
+	return FALSE;
+}
+
+bool checkIsBallInDribbler() {
+	float floorX, floorY;
+	for (int i = 0; i < ballsShare.count; ++i) {
+		convertToFloorCoordinates(ballsShare.data[i].x, ballsShare.data[i].x, floorX, floorY);
+		if (floorX < 20.0 / 100.0 && fabs(floorY) < 5.0 / 100.0){
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+void rotateAroundFrontAndMoveForward(float angularVelocity, float speedForward) {
+	currentDrivingState.speed = -angularVelocity * PI / 180 * baseRadius;
+	currentDrivingState.angle = 90, currentDrivingState.angularVelocity = angularVelocity;
+	currentDrivingState.vx = speedForward, currentDrivingState.vy = 0;
+	setSpeedBoth(currentDrivingState);
+}
+
+void rotateAroundFront(float angularVelocity) {
+	currentDrivingState.speed = -angularVelocity * PI / 180 * baseRadius;
+	currentDrivingState.angle = 90, currentDrivingState.angularVelocity = angularVelocity;
+	setSpeedAngle(currentDrivingState);
+}
+
+//start driving to the position with coordinates in the floor system, try to rotate by an angle before arriving
+void driveToFloorXY(float floorX, float floorY, float angle) {
+	floorX = floorX < 1 / 100 ? 1 / 100 : floorX;
+	floorY = floorY < 1 / 100 ? 1 / 100 : floorY;
+	float dist = powf(floorX*floorX + floorY*floorY, 0.5); //distance to the ball
+	float speedMultiplier = tanhf(dist/0.7); //use square root of the distance for modulating speed
+	float speedBase = 0.5; //max speed
+	float speed = speedBase*speedMultiplier;
+	float time = dist / speed;
+	float angleToBall = atanf(floorY / floorX)/PI*180;
+	prints(L"Angle to ball: %.2f\n", angleToBall);
+	currentDrivingState.angularVelocity = speedBase * 5 * angleToBall;
+	currentDrivingState.speed = speed;
+	currentDrivingState.angle = angleToBall;
+	setSpeedAngle(currentDrivingState);
+}
+
+void convertToFloorCoordinates(int currentx, int currenty, float& floorX, float& floorY) {
+	//x, y, z are the coordinates on the floor, x axis straight ahead, y axis to the left
+	vector eCameraNormal = { cosf(cameraAngle), 0, -sinf(cameraAngle) };	//basis vector in the direction the camera is pointing
+	vector ex = { 0, -1 * tanf(angleOfView / 2) / 320, 0 };		//the vector per pixel along the x direction from the center of the image considering camera normal vector is length 1
+	vector ey = { sinf(cameraAngle) * tanf(angleOfView / 2) / 320, 0, cosf(cameraAngle) * tanf(angleOfView / 2) / 320 };	//same in the y direction
+
+	vector ball = { (currenty - 240) * ey.e1 + eCameraNormal.e1, 
+					(currentx - 320) * ex.e2 + eCameraNormal.e2, 
+					(currenty - 240) * ey.e3 + eCameraNormal.e3 };
+	ball.e3 = fabs(ball.e3) < 1 / 10000 ? 1 / 10000 : fabs(ball.e3);
+
+	floorX = ball.e1 * height / ball.e3, floorY = ball.e2 * height / ball.e3;
+}
+
+//rotates around the center with the given angular velocity in degs/s
+void rotateAroundCenter(float angularVelocity) {
+	currentDrivingState.angle = 0, currentDrivingState.speed = 0, currentDrivingState.angularVelocity = angularVelocity;
+	setSpeedAngle(currentDrivingState);
+}
+
+//finds an object nearest to the old x, y values
+void findNearestObject(int& currentx, int& currenty, objectCollection& objects) {
+	int minDist = (currentx - objects.data[0].x) * (currentx - objects.data[0].x) + (currenty - objects.data[0].y) * (currenty - objects.data[0].y), minIndex = 0;
+	for (int i = 0; i < objects.count; ++i) {
+		int dist = (currentx - objects.data[i].x) * (currentx - objects.data[i].x) + (currenty - objects.data[i].y) * (currenty - objects.data[i].y);
+		if (dist < minDist) {
+			minDist = dist;
+			minIndex = i;
+		}
+	}
+	currentx = objects.data[minIndex].x, currenty = objects.data[minIndex].y;
+}
+
+//finds an object with the largest pixelcount
+void findLargestObject(int& x, int& y, objectCollection& objects) {
+	int largestPixelCount = 0;
+	for (int i = 0; i < objects.count; ++i) {
+		int pixelCount = objects.data[i].pixelcount;
+		if (pixelCount > largestPixelCount) {
+			x = objects.data[i].x, y = objects.data[i].y;
 		}
 	}
 }
@@ -247,6 +359,12 @@ void receiveCommand() { //the character 'a' was received from the radio, now rea
 //initializes the COM ports to the right handles; not needed, we have a dongle
 void initCOMPort() {
 	DCB dcb = {};
+	COMMTIMEOUTS timeouts;
+	timeouts.ReadIntervalTimeout = 5;
+	timeouts.ReadTotalTimeoutConstant = 5;
+	timeouts.ReadTotalTimeoutMultiplier = 5;
+	timeouts.WriteTotalTimeoutConstant = 10;
+	timeouts.WriteTotalTimeoutMultiplier = 5;
 
 	//hCOMDongle = CreateFile(L"\\\\.\\COM3", GENERIC_READ | GENERIC_WRITE, 0, NULL,
 	//	OPEN_EXISTING, 0, NULL);
@@ -261,9 +379,9 @@ void initCOMPort() {
 
 	ZeroMemory(&dcb, sizeof(DCB));
 	dcb.DCBlength = sizeof(DCB);
-	if (!GetCommState(hCOMRadio, &dcb))
+	if (!GetCommState(hCOMDongle, &dcb))
 	{
-		prints(L"GetCommState failed with error %X.\n", GetLastError());
+		prints(L"Dongle GetCommState failed with error %X.\n", GetLastError());
 	}
 	prints(L"Baudrate %d\n", dcb.BaudRate);
 
@@ -272,9 +390,12 @@ void initCOMPort() {
 	dcb.Parity = NOPARITY;
 	dcb.StopBits = ONESTOPBIT;
 
-	if (!SetCommState(hCOMRadio, &dcb))
+	if (!SetCommState(hCOMDongle, &dcb))
 	{
-		prints(L"SetCommState failed with error %X.\n", GetLastError());
+		prints(L"Dongle SetCommState failed with error %X.\n", GetLastError());
+	}
+	if (!SetCommTimeouts(hCOMDongle, &timeouts)) {
+		prints(L"Dongle SetCommTimeouts failed with error %d.\n", GetLastError());
 	}
 	else //turn off the failsafe of the engine controllers
 	{
@@ -283,7 +404,7 @@ void initCOMPort() {
 		sendString(hCOMDongle, "3:fs0\n");
 		sendString(hCOMDongle, "4:fs0\n");
 	}
-	prints(L"COM init end\n\n");
+	prints(L"COM init end\r\n\r\n");
 }
 
 boolean validCommand(char* readBuffer) {
@@ -330,8 +451,6 @@ void checkCommand(char* readBuffer) {
 	}
 }
 
-
-
 void sendString(HANDLE hComm, char* outputBuffer) {
 	DWORD bytesWritten;
 	int len;
@@ -361,20 +480,34 @@ void setEngineRotation(int id, int speed) {
 }
 
 //sets the robot speed to specific values, wheels go 1-2-3-4 from front left to back right
-//x axis is straight ahead, y axis is to the left
-//in units m, s, degrees, positive angle turns left
-void setSpeed(float speed, float angle, float angularVelocity) {
-	float wheelRadius = 3.5 / 100; //in meters
-	float baseRadius = 14.0 / 100; //base radius in meters from the center to the wheel
-
-	const float realToPlateUnits = (18.75 * 64) / 62.5;
+//x axis is straight ahead, y axis is to the left, angle is with respect to x axis
+//in units m, s, degrees, positive angle turns left, uses only the angle
+void setSpeedAngle(float speed, float angle, float angularVelocity) {
 	float vx = speed*cosf(angle * PI / 180);
 	float vy = speed*sinf(angle * PI / 180);
+	setSpeedXY(vx, vy, angularVelocity);
+}
 
-	int wheel1Speed = (int)(((vx - vy) / (wheelRadius * SQRT2 * 2 * PI) - angularVelocity/360 * baseRadius / wheelRadius)*realToPlateUnits);
-	int wheel2Speed = (int)(((vx + vy) / (wheelRadius * SQRT2 * 2 * PI) + angularVelocity/360 * baseRadius / wheelRadius)*realToPlateUnits);
-	int wheel3Speed = (int)(((vx + vy) / (wheelRadius * SQRT2 * 2 * PI) - angularVelocity/360 * baseRadius / wheelRadius)*realToPlateUnits);
-	int wheel4Speed = (int)(((vx - vy) / (wheelRadius * SQRT2 * 2 * PI) + angularVelocity/360 * baseRadius / wheelRadius)*realToPlateUnits);
+void setSpeedAngle(drivingState state) {
+	setSpeedAngle(state.speed, state.angle, state.angularVelocity);
+}
+
+//sets the speed by adding up the vx, vy and the values got from the angle and speed
+void setSpeedBoth(drivingState state) {
+	setSpeedXY(state.vx + state.speed*cosf(state.angle * PI / 180), state.vy + state.speed*sinf(state.angle * PI / 180), state.angularVelocity);
+}
+
+//sets the robot speed to specific values, wheels go 1-2-3-4 from front left to back right
+//x axis is straight ahead, y axis is to the left
+//in units m, s, degrees, positive angle turns left
+void setSpeedXY(float vx, float vy, float angularVelocity) {
+
+	const float realToPlateUnits = (18.75 * 64) / 62.5;
+
+	int wheel1Speed = (int)(((vx - vy) / (wheelRadius * SQRT2 * 2 * PI) - angularVelocity / 360 * baseRadius / wheelRadius)*realToPlateUnits);
+	int wheel2Speed = (int)(((vx + vy) / (wheelRadius * SQRT2 * 2 * PI) + angularVelocity / 360 * baseRadius / wheelRadius)*realToPlateUnits);
+	int wheel3Speed = (int)(((vx + vy) / (wheelRadius * SQRT2 * 2 * PI) - angularVelocity / 360 * baseRadius / wheelRadius)*realToPlateUnits);
+	int wheel4Speed = (int)(((vx - vy) / (wheelRadius * SQRT2 * 2 * PI) + angularVelocity / 360 * baseRadius / wheelRadius)*realToPlateUnits);
 	if (wheel1Speed > 190 || wheel2Speed > 190 || wheel3Speed > 190 || wheel4Speed > 190)
 		prints(L"Wheel speed overflow.");
 
@@ -382,6 +515,10 @@ void setSpeed(float speed, float angle, float angularVelocity) {
 	setEngineRotation(2, wheel2Speed);
 	setEngineRotation(3, wheel3Speed);
 	setEngineRotation(4, wheel4Speed);
+}
+
+void setSpeedXY(drivingState state) {
+	setSpeedXY(state.vx, state.vy, state.angularVelocity);
 }
 
 //calculates the direction of the robot modulo 90 degrees. For this it determines the orientation with respect to the field lines.
@@ -398,7 +535,7 @@ float calculateDirection(lineInfo line) {
 	vector ex = { 0, -1, 0 };		//basis vector in the x direction of the camera image where the pixel x coordinate increases, so called image basis
 	vector ey = { sinf(cameraAngle), 0, cosf(cameraAngle) };	//basis vector in the y direction of the camera image where the pixel y coordinate increases
 
-																//a vector to a point on the line and a vector along the line in the basis ex, ey, eCameraNormal
+	//a vector to a point on the line and a vector along the line in the basis ex, ey, eCameraNormal
 	vector vLinePoint = { r*cosf(angle) / 320 * tanf(angleOfView / 2), r*sinf(angle) / 320 * tanf(angleOfView / 2), 1 };
 	vector alongTheLine = { sinf(angle), -cosf(angle), 0 };
 	//normal vector to the plane that contains the viewer and the line in that same basis, calculated using vector product

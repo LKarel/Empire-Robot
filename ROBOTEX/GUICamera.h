@@ -2,7 +2,7 @@
 
 DWORD WINAPI GUICamera(LPVOID lpParameter);
 void prints(wchar_t* text, ...);
-void setSpeed(float speed, float angle, float angularVelocity); //from the main program
+void setSpeedAngle(float speed, float angle, float angularVelocity); //from the main program
 
 //information about a detected object
 struct objectInfo {
@@ -15,6 +15,8 @@ struct drivingState {
 	float speed;
 	float angle;
 	float angularVelocity;
+	float vx;
+	float vy;
 };
 
 struct objectCollection {

@@ -77,6 +77,10 @@ HWND ballsRadioButton;
 HWND goalsBlueRadioButton;
 HWND goalsYellowRadioButton;
 HWND linesRadioButton;
+HWND hwndBallsPixelCount;
+HWND hwndGoalsBluePixelCount;
+HWND hwndGoalsYellowPixelCount;
+HWND hwndLinesPixelCount;
 HWND whitenCheckBox;
 HWND minRadioButton;
 HWND maxRadioButton;
@@ -96,13 +100,15 @@ extern HANDLE calibratingSignal;
 extern HANDLE calibratingEndSignal;
 extern int listenToRadio;
 extern char* currentID;
+extern int ballsPixelCount, goalsBluePixelCount, goalsYellowPixelCount, linesPixelCount;
 HANDLE writeMutex = CreateMutex(NULL, FALSE, NULL);
 
 enum {
 	ID_EDITCHILD, ID_BUTTON1, ID_BUTTON2, ID_BUTTON3, ID_BUTTON_DONE, ID_TRACKBAR_HUE, ID_TRACKBAR_SATURATION,
 	ID_TRACKBAR_VALUE, ID_RADIOBOXGROUP_MINMAX, ID_RADIOBOX_MIN, ID_RADIOBOX_MAX, ID_BUTTON_SAVE,
 	ID_BUTTON_RESET, ID_RADIOBOXGROUP_OBJECTSELECTOR, ID_RADIOBOX_BALLS, ID_RADIOBOX_GOALSBLUE, ID_RADIOBOX_GOALSYELLOW,
-	ID_RADIOBOX_LINES, ID_CHECKBOX_WHITEN, ID_CHECKBOX_RADIO, ID_EDIT_ID
+	ID_RADIOBOX_LINES, ID_CHECKBOX_WHITEN, ID_CHECKBOX_RADIO, ID_EDIT_ID, ID_BALLS_PIXELCOUNT, ID_GOALSBLUE_PIXELCOUNT,
+	ID_GOALSYELLOW_PIXELCOUNT, ID_LINES_PIXELCOUNT
 };
 
 objectCollection balls, goalsBlue, goalsYellow, ballsShare, goalsBlueShare, goalsYellowShare; //local data structure for holding objects and shared structures
@@ -215,6 +221,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 	ZeroMemory(houghTransformBuffer, 150 * 150 * 4);
 	ZeroMemory(balls.data, balls.size*sizeof(objectInfo));
 	ZeroMemory(goalsBlue.data, goalsBlue.size*sizeof(objectInfo));
+	ZeroMemory(goalsYellow.data, goalsYellow.size*sizeof(objectInfo));
 	ZeroMemory(lines.data, lines.size*sizeof(lineInfo));
 	balls.count = 0;
 	goalsBlue.count = 0;
@@ -264,11 +271,15 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 			}
 		}
 	}
+	ballsPixelCount = ballsPixelCount <= 0 ? 1 : ballsPixelCount;
+	goalsBluePixelCount = goalsBluePixelCount <= 0 ? 1 : goalsBluePixelCount;
+	goalsYellowPixelCount = goalsYellowPixelCount <= 0 ? 1 : goalsYellowPixelCount;
+	linesPixelCount = linesPixelCount <= 0 ? 1 : linesPixelCount;
 	//check if there are enough pixels in an object, get rid of the other ones and count the balls
 	ballCount = 0;
 	//printf("balls count before: %d\n", balls.count);
 	for (int i = 0; i <= balls.count; ++i) {
-		if (balls.data[i].pixelcount >= 150) {
+		if (balls.data[i].pixelcount >= ballsPixelCount) {
 			balls.data[ballCount] = balls.data[i];
 			balls.data[ballCount].x /= balls.data[ballCount].pixelcount;
 			balls.data[ballCount].y /= balls.data[ballCount].pixelcount;
@@ -282,7 +293,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 
 	goalCount = 0;
 	for (int i = 0; i <= goalsBlue.count; ++i) {
-		if (goalsBlue.data[i].pixelcount >= 500) {
+		if (goalsBlue.data[i].pixelcount >= goalsBluePixelCount) {
 			goalsBlue.data[goalCount] = goalsBlue.data[i];
 			goalsBlue.data[goalCount].x /= goalsBlue.data[goalCount].pixelcount;
 			goalsBlue.data[goalCount].y /= goalsBlue.data[goalCount].pixelcount;
@@ -295,7 +306,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 
 	goalCount = 0;
 	for (int i = 0; i <= goalsYellow.count; ++i) {
-		if (goalsYellow.data[i].pixelcount >= 500) {
+		if (goalsYellow.data[i].pixelcount >= goalsYellowPixelCount) {
 			goalsYellow.data[goalCount] = goalsYellow.data[i];
 			goalsYellow.data[goalCount].x /= goalsYellow.data[goalCount].pixelcount;
 			goalsYellow.data[goalCount].y /= goalsYellow.data[goalCount].pixelcount;
@@ -314,7 +325,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 			int up = angle < 150-1 ? houghTransformBuffer[r + 150 * (angle + 1)] / 2 : 0;
 			int right = r < 150-1 ? houghTransformBuffer[r + 1 + 150 * angle] / 2 : 0;
 			int down = angle > 0 ? houghTransformBuffer[r + 150 * (angle - 1)] / 2 : 0;
-			if (current > 300 && current >= left && current >= down && current > right && current > up) {
+			if (current > linesPixelCount && current >= left && current >= down && current > right && current > up) {
 				lines.data[lines.count].radius = 4*r;
 				lines.data[lines.count].angle = angle*2*PI/150;
 				lines.data[lines.count].pixelcount = current;
@@ -454,6 +465,19 @@ public:
 				else if (whitenThresholdPixels)
 					*pixBuffer = 0xFFFFFF;
 			}
+			analyzeImage(Time, pBuffer, BufferLen);
+			for (int i = 0; i < balls.count; ++i) {
+				drawCross(balls.data[i].x, balls.data[i].y, 0xFF0000, g_pBuffer); //red
+			}
+			for (int i = 0; i < goalsBlue.count; ++i) {
+				drawCross(goalsBlue.data[i].x, goalsBlue.data[i].y, 0x0000FF, g_pBuffer); //blue
+			}
+			for (int i = 0; i < goalsYellow.count; ++i) {
+				drawCross(goalsYellow.data[i].x, goalsYellow.data[i].y, 0xFFFF00, g_pBuffer); //yellow
+			}
+			for (int i = 0; i < lines.count; ++i) {
+				drawLine(lines.data[i].angle, lines.data[i].radius, 0xCC00CC, g_pBuffer); //purple
+			}
 			GdiFlush();
 		}
 		//if not calibrating, analyze each new image and draw crosses where the balls are at
@@ -474,6 +498,7 @@ public:
 			for (int i = 0; i < lines.count; ++i) {
 				drawLine(lines.data[i].angle, lines.data[i].radius, 0xCC00CC, g_pBuffer); //purple
 			}
+			drawCross(320, 240, 0, g_pBuffer);
 			//drawLine(4, 52, 0x000000FF, g_pBuffer);
 			SetEvent(newImageAnalyzed);
 			GdiFlush();
@@ -622,6 +647,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		hwndEdit = CreateWindowEx(
 			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
 			0, 480, 640 + 640, 200, hwnd, (HMENU)ID_EDITCHILD, hInstance, NULL);
+		SendMessage(hwndEdit, EM_SETLIMITTEXT, 10000000, 0);
 
 		//buttons in the upper right
 		HWND button1 = CreateWindowEx(0, L"BUTTON", L"START",
@@ -645,7 +671,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	case WM_SIZE:
 		return 0;
 	case WM_DESTROY:
-		setSpeed(0, 0, 0);
+		setSpeedAngle(0, 0, 0);
 		ShowWindow(hwndCalibrate, SW_HIDE);
 		Release();
 		PostQuitMessage(0);
@@ -655,10 +681,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		case ID_BUTTON1:
 			ResetEvent(stopSignal);
 			SetEvent(startSignal);
+			SetFocus(hwndMain);
 			return 0;
 		case ID_BUTTON2:
 			ResetEvent(startSignal);
 			SetEvent(stopSignal);
+			SetFocus(hwndMain);
 			return 0;
 		case ID_BUTTON3:
 			ShowWindow(hwndCalibrate, SW_SHOW);
@@ -667,6 +695,48 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 			SetEvent(calibratingSignal);
 			return 0;
 		}
+		break;
+	case WM_KEYDOWN: //drive the robot when the calibrating window is open and arrow keys are pressed
+		switch (wParam) {
+		case VK_UP:
+			currentDrivingState.speed = 0.3;
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			return 0;
+		case VK_DOWN:
+			currentDrivingState.speed = -0.3;
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			return 0;
+		case VK_LEFT:
+			currentDrivingState.angularVelocity = 60;
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			return 0;
+		case VK_RIGHT:
+			currentDrivingState.angularVelocity = -60;
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			return 0;
+		}
+	case WM_KEYUP:
+		switch (wParam) {
+		case VK_UP:
+			currentDrivingState.speed = 0;
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			break;
+		case VK_DOWN:
+			currentDrivingState.speed = 0;
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			break;
+		case VK_LEFT:
+			currentDrivingState.angularVelocity = 0;
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			break;
+		case VK_RIGHT:
+			currentDrivingState.angularVelocity = 0;
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			break;
+		}
+		break;
+	case WM_LBUTTONDOWN:
+		SetFocus(hwndMain);
 		break;
 	}
 	return DefWindowProc(hwnd, uMsg, wParam, lParam);
@@ -733,9 +803,9 @@ void setSlidersToValues(colorValues *colors) { //when the object or the slider v
 	SendMessage(hwndSaturation, TBM_SETPOS, TRUE, (int)(colors->saturation * 1000));
 	SendMessage(hwndValue, TBM_SETPOS, TRUE, (int)(colors->value * 1000));
 
-	RECT rc{ 120,270,280,350 };
+	RECT rc{ 120,310,280,390 };
 	InvalidateRect(hwndCalibrate, &rc, FALSE); //redraw the rectangle with the current color
-	rc = { 0,0,150,180 };
+	rc = { 0,0,150,220 };
 	InvalidateRect(hwndCalibrate, &rc, FALSE); //redraw the text area, where the current values are displayed
 }
 
@@ -748,7 +818,7 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 	{
 		//first adjust the window position, rc is the size of the client area
 		RECT rc;
-		rc.left = 0, rc.top = 0, rc.right = 400, rc.bottom = 450;
+		rc.left = 0, rc.top = 0, rc.right = 400, rc.bottom = 490;
 		AdjustWindowRectEx(&rc, GetWindowLong(hwnd, GWL_STYLE), FALSE, GetWindowLong(hwnd, GWL_EXSTYLE));
 		SetWindowPos(hwnd, NULL, 300, 100, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER);
 		HINSTANCE hInstance = GetModuleHandle(0);
@@ -783,9 +853,36 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 		if (whitenThresholdPixels)
 			SendMessage(linesRadioButton, BM_SETCHECK, BST_CHECKED, 0);
 
+		//boxes for the pixelcount thresholds of various objects
+		wchar_t tempBuffer[32] = {};
+		hwndBallsPixelCount = CreateWindowExW(
+			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | ES_LEFT,
+			10 + 10, 65, 60, 25, hwnd, (HMENU)ID_BALLS_PIXELCOUNT, hInstance, NULL);
+		SendMessage(hwndBallsPixelCount, EM_SETLIMITTEXT, 6, 0);
+		swprintf_s(tempBuffer, L"%d", ballsPixelCount);
+		SetWindowTextW(hwndBallsPixelCount, tempBuffer);
+		hwndGoalsBluePixelCount = CreateWindowExW(
+			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | ES_LEFT,
+			10 + 10 + 75, 65, 60, 25, hwnd, (HMENU)ID_GOALSBLUE_PIXELCOUNT, hInstance, NULL);
+		SendMessage(hwndGoalsBluePixelCount, EM_SETLIMITTEXT, 6, 0);
+		swprintf_s(tempBuffer, L"%d", goalsBluePixelCount);
+		SetWindowTextW(hwndGoalsBluePixelCount, tempBuffer);
+		hwndGoalsYellowPixelCount = CreateWindowExW(
+			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | ES_LEFT,
+			10 + 10 + 150, 65, 60, 25, hwnd, (HMENU)ID_GOALSYELLOW_PIXELCOUNT, hInstance, NULL);
+		SendMessage(hwndGoalsYellowPixelCount, EM_SETLIMITTEXT, 6, 0);
+		swprintf_s(tempBuffer, L"%d", goalsYellowPixelCount);
+		SetWindowTextW(hwndGoalsYellowPixelCount, tempBuffer);
+		hwndLinesPixelCount = CreateWindowExW(
+			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | ES_LEFT,
+			10 + 10 + 225, 65, 60, 25, hwnd, (HMENU)ID_LINES_PIXELCOUNT, hInstance, NULL);
+		SendMessage(hwndLinesPixelCount, EM_SETLIMITTEXT, 6, 0);
+		swprintf_s(tempBuffer, L"%d", linesPixelCount);
+		SetWindowTextW(hwndLinesPixelCount, tempBuffer);
+
 		//the sliders
 		hwndHue = CreateWindowEx(0, TRACKBAR_CLASS, L"Hue", WS_VISIBLE | WS_CHILD | TBS_ENABLESELRANGE,
-			150, 70, 250, 20, hwnd, (HMENU)ID_TRACKBAR_HUE, hInstance, 0);
+			150, 110, 250, 20, hwnd, (HMENU)ID_TRACKBAR_HUE, hInstance, 0);
 		activeColors->hue = activeColors->hueMin;
 		SendMessage(hwndHue, TBM_SETRANGE, TRUE, (1000 << 16));
 		SendMessage(hwndHue, TBM_SETPOS, TRUE, (int)(activeColors->hueMin * 1000 / 6));
@@ -793,7 +890,7 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 		SendMessage(hwndHue, TBM_SETSELSTART, TRUE, (int)(activeColors->hueMin * 1000 / 6));
 		SendMessage(hwndHue, TBM_SETSELEND, TRUE, (int)(activeColors->hueMax * 1000 / 6));
 		hwndSaturation = CreateWindowEx(0, TRACKBAR_CLASS, L"Saturation", WS_VISIBLE | WS_CHILD | TBS_ENABLESELRANGE,
-			150, 110, 250, 20, hwnd, (HMENU)ID_TRACKBAR_SATURATION, hInstance, 0);
+			150, 150, 250, 20, hwnd, (HMENU)ID_TRACKBAR_SATURATION, hInstance, 0);
 		activeColors->saturation = activeColors->saturationMin;
 		SendMessage(hwndSaturation, TBM_SETRANGE, TRUE, (1000 << 16));
 		SendMessage(hwndSaturation, TBM_SETPOS, TRUE, (int)(activeColors->saturationMin * 1000));
@@ -801,7 +898,7 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 		SendMessage(hwndSaturation, TBM_SETSELSTART, TRUE, (int)(activeColors->saturationMin * 1000));
 		SendMessage(hwndSaturation, TBM_SETSELEND, TRUE, (int)(activeColors->saturationMax * 1000));
 		hwndValue = CreateWindowEx(0, TRACKBAR_CLASS, L"Value", WS_VISIBLE | WS_CHILD | TBS_ENABLESELRANGE,
-			150, 150, 250, 20, hwnd, (HMENU)ID_TRACKBAR_VALUE, hInstance, 0);
+			150, 190, 250, 20, hwnd, (HMENU)ID_TRACKBAR_VALUE, hInstance, 0);
 		activeColors->value = activeColors->valueMin;
 		SendMessage(hwndValue, TBM_SETRANGE, TRUE, (1000 << 16));
 		SendMessage(hwndValue, TBM_SETPOS, TRUE, (int)(activeColors->valueMin * 1000));
@@ -812,37 +909,37 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 		//the selections for minimum or maximum
 		CreateWindowEx(0, L"BUTTON", L"Set thresholds for the desired color:",
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_GROUPBOX | WS_GROUP,
-			10, 175, 350, 90, hwnd, (HMENU)ID_RADIOBOXGROUP_MINMAX, hInstance, NULL);
+			10, 215, 390, 90, hwnd, (HMENU)ID_RADIOBOXGROUP_MINMAX, hInstance, NULL);
 		minRadioButton = CreateWindowEx(0, L"BUTTON", L"Minimum values",
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_AUTORADIOBUTTON,
-			10 + 10, 175 + 20, 150, 30, hwnd, (HMENU)ID_RADIOBOX_MIN, hInstance, NULL);
+			10 + 10, 215 + 20, 150, 30, hwnd, (HMENU)ID_RADIOBOX_MIN, hInstance, NULL);
 		if(currentCalibratorSetting == minimum)
 			SendMessage(minRadioButton, BM_SETCHECK, BST_CHECKED, 0);
 		maxRadioButton = CreateWindowEx(0, L"BUTTON", L"Maximum values",
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_AUTORADIOBUTTON,
-			10 + 10, 175 + 50, 150, 30, hwnd, (HMENU)ID_RADIOBOX_MAX, hInstance, NULL);
+			10 + 10, 215 + 50, 150, 30, hwnd, (HMENU)ID_RADIOBOX_MAX, hInstance, NULL);
 		if (currentCalibratorSetting == maximum)
 			SendMessage(maxRadioButton, BM_SETCHECK, BST_CHECKED, 0);
 
 		//the radio data
 		radioCheckBox = CreateWindowEx(0, L"BUTTON", L"Radio?  ID:",
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
-			10 + 10 , 360, 90, 30, hwnd, (HMENU)ID_CHECKBOX_RADIO, hInstance, NULL);
+			10 + 10 , 400, 90, 30, hwnd, (HMENU)ID_CHECKBOX_RADIO, hInstance, NULL);
 		if (listenToRadio)
 			SendMessage(radioCheckBox, BM_SETCHECK, BST_CHECKED, 0);
 		hwndEditID = CreateWindowExW(
 			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | ES_LEFT,
-			10 + 10 + 95, 365, 80, 25, hwnd, (HMENU)ID_EDIT_ID, hInstance, NULL);
+			10 + 10 + 95, 405, 80, 25, hwnd, (HMENU)ID_EDIT_ID, hInstance, NULL);
 		SendMessage(hwndEditID, EM_SETLIMITTEXT, 2, 0);
 		SetWindowTextA(hwndEditID, currentID);
 
 		//the buttons
 		CreateWindowEx(0, L"BUTTON", L"DONE", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
-			50, 410, 100, 30, hwnd, (HMENU)ID_BUTTON_DONE, hInstance, NULL);
+			50, 450, 100, 30, hwnd, (HMENU)ID_BUTTON_DONE, hInstance, NULL);
 		CreateWindowEx(0, L"BUTTON", L"SAVE", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
-			150, 410, 100, 30, hwnd, (HMENU)ID_BUTTON_SAVE, hInstance, NULL);
+			150, 450, 100, 30, hwnd, (HMENU)ID_BUTTON_SAVE, hInstance, NULL);
 		CreateWindowEx(0, L"BUTTON", L"RESET", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
-			250, 410, 100, 30, hwnd, (HMENU)ID_BUTTON_RESET, hInstance, NULL);
+			250, 450, 100, 30, hwnd, (HMENU)ID_BUTTON_RESET, hInstance, NULL);
 		
 		return 0;
 	}
@@ -862,6 +959,7 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 		calibrating = FALSE;
 		ResetEvent(calibratingSignal);
 		SetEvent(calibratingEndSignal);
+		SetFocus(hwndMain);
 		return 0;
 	case WM_COMMAND: //if a button is pressed
 		switch (LOWORD(wParam)) {
@@ -965,7 +1063,53 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 				wcstombs_s((size_t*)&charsConverted, currentID, 4, buffer, 3); //convert to char from wchar_t
 				for (int i = GetWindowTextLengthW(hwndEditID); i < 4; ++i)
 					currentID[i] = 0;
-				prints(L"text %S\n", currentID);
+				return 0;
+			default:
+				break;
+			}
+		case ID_BALLS_PIXELCOUNT:
+			switch (HIWORD(wParam)) {
+			case EN_CHANGE:
+				wchar_t buffer[16];
+				int charsConverted;
+				GetWindowTextW(hwndBallsPixelCount, buffer, 16);
+				ballsPixelCount = _wtoi(buffer);
+				return 0;
+			default:
+				break;
+			}
+		case ID_GOALSBLUE_PIXELCOUNT:
+			switch (HIWORD(wParam)) {
+			case EN_CHANGE:
+				wchar_t buffer[16];
+				int charsConverted;
+				GetWindowTextW(hwndGoalsBluePixelCount, buffer, 16);
+				goalsBluePixelCount = _wtoi(buffer);
+				return 0;
+			default:
+				break;
+			}
+		case ID_GOALSYELLOW_PIXELCOUNT:
+			switch (HIWORD(wParam)) {
+			case EN_CHANGE:
+				wchar_t buffer[16];
+				int charsConverted;
+				GetWindowTextW(hwndGoalsYellowPixelCount, buffer, 16);
+				goalsYellowPixelCount = _wtoi(buffer);
+				return 0;
+			default:
+				break;
+			}
+		case ID_LINES_PIXELCOUNT:
+			switch (HIWORD(wParam)) {
+			case EN_CHANGE:
+				wchar_t buffer[16];
+				int charsConverted;
+				GetWindowTextW(hwndLinesPixelCount, buffer, 16);
+				linesPixelCount = _wtoi(buffer);
+				return 0;
+			default:
+				break;
 			}
 		}
 		break;
@@ -997,38 +1141,38 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 		switch (wParam) {
 		case VK_UP:
 			currentDrivingState.speed = 0.3;
-			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
 			return 0;
 		case VK_DOWN:
 			currentDrivingState.speed = -0.3;
-			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
 			return 0;
 		case VK_LEFT:
 			currentDrivingState.angularVelocity = 60;
-			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
 			return 0;
 		case VK_RIGHT:
 			currentDrivingState.angularVelocity = -60;
-			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
 			return 0;
 		}
 	case WM_KEYUP:
 		switch (wParam) {
 		case VK_UP:
 			currentDrivingState.speed = 0;
-			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
 			break;
 		case VK_DOWN:
 			currentDrivingState.speed = 0;
-			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
 			break;
 		case VK_LEFT:
 			currentDrivingState.angularVelocity = 0;
-			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
 			break;
 		case VK_RIGHT:
 			currentDrivingState.angularVelocity = 0;
-			setSpeed(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
 			break;
 		}
 		break;
@@ -1036,9 +1180,11 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 		SetFocus(hwndCalibrate);
 		if (currentCalibratorSetting == minimum) {
 			SendMessage(hwndCalibrate, WM_COMMAND, ID_RADIOBOX_MAX, 0);
+			SendMessage(maxRadioButton, BM_SETCHECK, BST_CHECKED, 0);
 		}
 		else {
 			SendMessage(hwndCalibrate, WM_COMMAND, ID_RADIOBOX_MIN, 0);
+			SendMessage(minRadioButton, BM_SETCHECK, BST_CHECKED, 0);
 		}
 		break;
 	}
@@ -1050,7 +1196,7 @@ void OnPaintCalibrator(HWND hwnd) {
 	int len = 0;
 	RECT rc;
 	GetClientRect(hwnd, &rc);
-	RECT rc2 = { 120,270,280,350 };		//rectangle where the current color is drawn
+	RECT rc2 = { 120,310,280,390 };		//rectangle where the current color is drawn
 	PAINTSTRUCT ps;
 	HDC hdc;
 	hdc = BeginPaint(hwnd, &ps);
@@ -1061,9 +1207,9 @@ void OnPaintCalibrator(HWND hwnd) {
 
 	SetBkMode(hdc, TRANSPARENT); //for text printing, doesn't draw a box around the text
 
-	TextOutW(hdc, 10, 70, buf, swprintf(buf, 20, L"Hue:        %.4f", activeColors->hue));
-	TextOutW(hdc, 10, 110, buf, swprintf(buf, 20, L"Saturation: %.4f", activeColors->saturation));
-	TextOutW(hdc, 10, 150, buf, swprintf(buf, 20, L"Value:     %.4f", activeColors->value));
+	TextOutW(hdc, 10, 110, buf, swprintf(buf, 20, L"Hue:        %.4f", activeColors->hue));
+	TextOutW(hdc, 10, 150, buf, swprintf(buf, 20, L"Saturation: %.4f", activeColors->saturation));
+	TextOutW(hdc, 10, 190, buf, swprintf(buf, 20, L"Value:     %.4f", activeColors->value));
 
 	//HRGN hrgn = CreateRectRgn(120, 250, 280, 330);
 	//SelectClipRgn(hdc, hrgn);
@@ -1119,6 +1265,7 @@ LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 			prints(L"clicked on red %d green %d blue %d, x: %d, y: %d\n", red, green, blue, x, y);
 		}
+		SetFocus(hwndMain);
 		break;
 	}
 	return DefWindowProc(hwnd, uMsg, wParam, lParam);
@@ -1475,6 +1622,10 @@ void saveToFileColorThresholds() {
 	WriteFile(dataFile, &whitenThresholdPixels, sizeof(whitenThresholdPixels), &numberOfBytesRead, NULL);
 	WriteFile(dataFile, &listenToRadio, sizeof(listenToRadio), &numberOfBytesRead, NULL);
 	WriteFile(dataFile, currentID, 4, &numberOfBytesRead, NULL);
+	WriteFile(dataFile, &ballsPixelCount, 4, &numberOfBytesRead, NULL);
+	WriteFile(dataFile, &goalsBluePixelCount, 4, &numberOfBytesRead, NULL);
+	WriteFile(dataFile, &goalsYellowPixelCount, 4, &numberOfBytesRead, NULL);
+	WriteFile(dataFile, &linesPixelCount, 4, &numberOfBytesRead, NULL);
 	
 	CloseHandle(dataFile);
 }
@@ -1492,6 +1643,10 @@ void readFromFileColorThresholds() {
 	ReadFile(dataFile, &whitenThresholdPixels, sizeof(whitenThresholdPixels), &numberOfBytesRead, NULL);
 	ReadFile(dataFile, &listenToRadio, sizeof(listenToRadio), &numberOfBytesRead, NULL);
 	ReadFile(dataFile, currentID, 4, &numberOfBytesRead, NULL);
+	ReadFile(dataFile, &ballsPixelCount, 4, &numberOfBytesRead, NULL);
+	ReadFile(dataFile, &goalsBluePixelCount, 4, &numberOfBytesRead, NULL);
+	ReadFile(dataFile, &goalsYellowPixelCount, 4, &numberOfBytesRead, NULL);
+	ReadFile(dataFile, &linesPixelCount, 4, &numberOfBytesRead, NULL);
 	CloseHandle(dataFile);
 }
 
