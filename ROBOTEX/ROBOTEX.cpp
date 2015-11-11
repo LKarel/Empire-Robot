@@ -10,8 +10,8 @@
 float wheelRadius = 3.5 / 100.0; //in meters
 float baseRadius = 14.0 / 100.0; //base radius in meters from the center to the wheel
 float height = 17.0 / 100.0; //height in meters of the camera
-float cameraAngle = 25.0 * PI / 180.0; //the angle that the camera is down with respect to the horizontal, height of camera is 17cm, midpoint of the image is 37 cm away
-float angleOfView = 59.0 * PI / 180.0; //the horizontal angle of view, it saw a 77cm wide rule 67cm away along the floor
+float cameraAngle = 25.0 * PI / 180.0; //the angle in radians that the camera is down with respect to the horizontal, height of camera is 17cm, midpoint of the image is 37 cm away
+float angleOfView = 59.0 * PI / 180.0; //the horizontal angle of view in radians, it saw a 77cm wide rule 67cm away along the floor
 
 HANDLE readySignal = CreateEventW(NULL, FALSE, FALSE, NULL);
 HANDLE newImageAnalyzed = CreateEventW(NULL, FALSE,FALSE,NULL);
@@ -26,14 +26,19 @@ int ballsPixelCount = 0, goalsBluePixelCount = 0, goalsYellowPixelCount = 0, lin
 OVERLAPPED osReader = { };
 OVERLAPPED osWrite = { };
 OVERLAPPED osStatus = { };
+LARGE_INTEGER timerFrequency;
+LARGE_INTEGER startCounter;
+LARGE_INTEGER stopCounter;
 
 DWORD dwCommEvent = 0; //variable for the WaitCommEvent, stores the type of the event that occurred
 int listenToRadio; //whether to listen to commands from the radio or not
 char* currentID;
 drivingState currentDrivingState;
 extern objectCollection ballsShare, goalsBlueShare, goalsYellowShare;
+extern lineCollection linesShare;
 extern HANDLE writeMutex;
 extern BOOLEAN calibrating;
+extern HWND stateStatusGUI;
 
 void sendString(HANDLE hComm, char* outputBuffer);
 int receiveString(HANDLE hComm, char* outputBuffer);
@@ -58,7 +63,7 @@ void convertToFloorCoordinates(int currentx, int currenty, float& floorX, float&
 void driveToFloorXY(float floorX, float floorY, float angle);
 void rotateAroundFront(float angularVelocity);
 void rotateAroundFrontAndMoveForward(float angularVelocity, float speedForward);
-bool checkIsBallInDribbler();
+bool checkIsBallInDribbler(int currentx, int currenty);
 bool isLineInFront();
 
 enum State { lookForBall, lookForGoal, driveToBall, driveToGoal, rotate180 } state;
@@ -87,8 +92,10 @@ WaitForSingleObject(GUIThread, INFINITE);
 void test() {
 	initCOMPort();
 	initUSBRadio();
+	QueryPerformanceFrequency(&timerFrequency);
 	HANDLE waitHandles[2] = { osStatus.hEvent, startSignal };
 	while (true) {
+		setSpeedBoth(currentDrivingState);
 		switch (WaitForMultipleObjects(2, waitHandles, FALSE, 1000)) {
 		case WAIT_OBJECT_0:
 			prints(L"radio event %X\n", dwCommEvent);
@@ -97,6 +104,7 @@ void test() {
 			break;
 		case WAIT_OBJECT_0 + 1:
 			prints(L"Start signal arrived.\n");
+			SetWindowText(stateStatusGUI, L"started");
 			testSingleBallTrack();
 			break;
 		}
@@ -106,15 +114,22 @@ void test() {
 void testSingleBallTrack() {
 	HANDLE waitHandles[4] = { newImageAnalyzed, stopSignal, osStatus.hEvent, calibratingSignal };
 	int currentx = 320, currenty = 0;
-	int timeOut = 50; //timeout after sending each command
+	int timeOut = 50;
+	float movingTime; //timeout after sending each command
 	objectCollection goals;
 
 	while (true) {
 		switch (WaitForMultipleObjects(4, waitHandles, FALSE, timeOut)) {
 		case WAIT_OBJECT_0: //new image analyzed
-			break;
+			if (calibrating) {
+				setSpeedBoth(currentDrivingState);
+			}
+			else {
+				break;
+			}
 		case WAIT_OBJECT_0 + 1: //stop signal
 			prints(L"Stop signal arrived.\n");
+			SetWindowText(stateStatusGUI, L"stopped");
 			currentDrivingState.angle = 0, currentDrivingState.speed = 0, currentDrivingState.vx = 0, 
 				currentDrivingState.vy = 0, currentDrivingState.angularVelocity = 0;
 			setSpeedAngle(currentDrivingState);
@@ -123,55 +138,71 @@ void testSingleBallTrack() {
 		case WAIT_OBJECT_0 + 2: //start of a new command from the radio detected
 			//ResetEvent(osStatus.hEvent);
 			prints(L"radio event %X\n", dwCommEvent);
-			receiveCommand();
-			WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus);
+			receiveCommand(); //receive and interpret the command
+			WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus); //listen to new events, ie beginning character
 			continue;
 		case WAIT_OBJECT_0 + 3: //calibrating signal
+			SetWindowText(stateStatusGUI, L"calibrating");
 			prints(L"Calibrating signal.\n");
-			setSpeedAngle(0, 0, 0);
-			WaitForSingleObject(calibratingEndSignal, INFINITE);
+			currentDrivingState.angle = 0, currentDrivingState.speed = 0, currentDrivingState.vx = 0,
+				currentDrivingState.vy = 0, currentDrivingState.angularVelocity = 0;
+			setSpeedBoth(currentDrivingState);
+			//WaitForSingleObject(calibratingEndSignal, INFINITE);
 			continue;
 		}
-		rotateAroundFront(20.0);
-		continue;
+
 		goals = currentID[1] == 'A' ? goalsBlueShare : goalsYellowShare;
 
 		if (state == lookForBall) {
+			//prints(L"Looking for ball\n");
+			SetWindowText(stateStatusGUI, L"looking for ball");
 			if (ballsShare.count == 0) {
-				rotateAroundCenter(-60);
+				rotateAroundCenter(-120);
 			}
 			else {
 				state = driveToBall;
 			}
 		}
 		if (state == driveToBall) {
+			//prints(L"Driving to ball\n");
+			SetWindowText(stateStatusGUI, L"driving to ball");
 			float floorX, floorY;
 			findNearestObject(currentx, currenty, ballsShare);
 			convertToFloorCoordinates(currentx, currenty, floorX, floorY);
-			prints(L"Floor coordinates x: %.2f, y: %.2f\n", floorX, floorY);
+			//prints(L"Floor coordinates x: %.2f, y: %.2f\n", floorX, floorY);
 			if (ballsShare.count == 0) {
-				prints(L"Drive state, but ballcount zero, starting to look for ball.\n");
+				//prints(L"Drive state, but ballcount zero, starting to look for ball.\n");
 				state = lookForBall;
 				continue;
 			}
-			if (floorX < 20.0 / 100.0) {
+			if (floorX < 21.0 / 100.0) {
 				state = lookForGoal;
+			}
+			else if (isLineInFront()) {
+				prints(L"Line in front\n");
+				QueryPerformanceCounter(&startCounter);
+				state = rotate180;
+				currentDrivingState.angularVelocity = -90, currentDrivingState.speed = 0;
+				setSpeedAngle(currentDrivingState);
+				movingTime = 1.5;
 			}
 			else {
 				driveToFloorXY(floorX, floorY, NULL);
 			}
 		}
 		if (state == lookForGoal) {
-			prints(L"Looking for goal\n");
-			if (checkIsBallInDribbler()) {
+			//prints(L"Looking for goal\n");
+			SetWindowText(stateStatusGUI, L"looking for goal");
+			if (checkIsBallInDribbler(currentx, currenty)) {
 				int x = 0, y = 0;
 				findLargestObject(x, y, goals);
 				x -= 320, y -= 240;
+				//prints(L"Goal x: %d\n", x);
 				if (abs(x) < 30) {
 					state = driveToGoal;
 				}
 				else {
-					rotateAroundFront(-60 * tanhf((x - 320) / 130));
+					rotateAroundFront(-60.0 * tanhf(x / 130.0));
 				}
 			}
 			else {
@@ -179,15 +210,22 @@ void testSingleBallTrack() {
 			}
 		}
 		if (state == driveToGoal) {
-			if (checkIsBallInDribbler()) {
+			//prints(L"Driving to goal\n");
+			SetWindowText(stateStatusGUI, L"driving to goal");
+			if (checkIsBallInDribbler(currentx, currenty)) {
 				if (goals.count > 0) {
 					if (isLineInFront()) {
+						prints(L"Line in front\n");
+						QueryPerformanceCounter(&startCounter);
 						state = rotate180;
+						currentDrivingState.angularVelocity = -90, currentDrivingState.speed = 0;
+						setSpeedAngle(currentDrivingState);
+						movingTime = 1.5;
 					}
 					else {
 						int x = 0, y = 0;
 						findLargestObject(x, y, goals);
-						rotateAroundFrontAndMoveForward(-60 * tanhf((x - 320) / 130), 0.1);
+						rotateAroundFrontAndMoveForward(-60 * tanhf(float(x - 320) / 130) * fabs(tanhf(float(x - 320) / 130))*2, 0.1*2);
 					}
 				}
 				else {
@@ -198,19 +236,47 @@ void testSingleBallTrack() {
 				state = lookForBall;
 			}
 		}
+		if (state == rotate180) {
+			//prints(L"Rotating 180\n");
+			SetWindowText(stateStatusGUI, L"rotating 180");
+			timeOut = 0;
+			QueryPerformanceCounter(&stopCounter);
+			if ((double)(stopCounter.QuadPart - startCounter.QuadPart)/((double)timerFrequency.QuadPart) > movingTime) {
+				timeOut = 50;
+				prints(L"turned around\n");
+				state = lookForBall;
+			}
+		}
 	}
 }
 
 bool isLineInFront() {
+	for (int i = 0; i < linesShare.count; ++i) {
+		float floorX, floorY;
+		float angle = linesShare.data[i].angle, radius = linesShare.data[i].radius;
+		float y = fabs(angle) < 1.0/1000.0 ? 1000.0 : radius / sinf(angle);
+		y += 240;
+		convertToFloorCoordinates(0, y, floorX, floorY);
+		if (floorX < 22.0 / 100.0) { //if there is a line closer than 22cm ahead
+			return TRUE;
+		}
+		convertToFloorCoordinates(radius*cosf(angle)+320, radius*sinf(angle)+240, floorX, floorY);
+		if (floorX*floorX + floorY*floorY < 5.0 / 100.0*5.0 / 100.0) { //if there is a line closer than 5 cm
+			return TRUE;
+		}
+	}
 	return FALSE;
 }
 
-bool checkIsBallInDribbler() {
+bool checkIsBallInDribbler(int currentx, int currenty) {
 	float floorX, floorY;
-	for (int i = 0; i < ballsShare.count; ++i) {
-		convertToFloorCoordinates(ballsShare.data[i].x, ballsShare.data[i].x, floorX, floorY);
-		if (floorX < 20.0 / 100.0 && fabs(floorY) < 5.0 / 100.0){
-			return TRUE;
+
+	if (ballsShare.count > 0) {
+		for (int i = 0; i < ballsShare.count; ++i) {
+			convertToFloorCoordinates(ballsShare.data[i].x, ballsShare.data[i].y, floorX, floorY);
+			if (floorX < 21.0 / 100.0 && fabs(floorY) < 8.0 / 100.0) {
+				return TRUE;
+			}
 		}
 	}
 	return FALSE;
@@ -234,18 +300,20 @@ void driveToFloorXY(float floorX, float floorY, float angle) {
 	floorX = floorX < 1 / 100 ? 1 / 100 : floorX;
 	floorY = floorY < 1 / 100 ? 1 / 100 : floorY;
 	float dist = powf(floorX*floorX + floorY*floorY, 0.5); //distance to the ball
-	float speedMultiplier = tanhf(dist/0.7); //use square root of the distance for modulating speed
-	float speedBase = 0.5; //max speed
+	float speedMultiplier = pow(tanhf(dist/0.6),2); //use square root of the distance for modulating speed
+	float speedBase = 0.8; //max speed
 	float speed = speedBase*speedMultiplier;
-	float time = dist / speed;
+	float time = dist / speed; //time to reach the ball
 	float angleToBall = atanf(floorY / floorX)/PI*180;
-	prints(L"Angle to ball: %.2f\n", angleToBall);
-	currentDrivingState.angularVelocity = speedBase * 5 * angleToBall;
+	//prints(L"Angle to ball: %.2f\n", angleToBall);
+	currentDrivingState.angularVelocity = 2 * angleToBall / time; //turn fast engouh so that we have turned by the angle to the ball by half the distance
 	currentDrivingState.speed = speed;
 	currentDrivingState.angle = angleToBall;
 	setSpeedAngle(currentDrivingState);
 }
 
+
+//converts pixel coordidnates to floor coordinates with respect to camera, uses the camera height, angle of view and camera angle
 void convertToFloorCoordinates(int currentx, int currenty, float& floorX, float& floorY) {
 	//x, y, z are the coordinates on the floor, x axis straight ahead, y axis to the left
 	vector eCameraNormal = { cosf(cameraAngle), 0, -sinf(cameraAngle) };	//basis vector in the direction the camera is pointing
@@ -399,10 +467,10 @@ void initCOMPort() {
 	}
 	else //turn off the failsafe of the engine controllers
 	{
-		sendString(hCOMDongle, "1:fs0\n");
-		sendString(hCOMDongle, "2:fs0\n");
-		sendString(hCOMDongle, "3:fs0\n");
-		sendString(hCOMDongle, "4:fs0\n");
+		//sendString(hCOMDongle, "1:fs0\n");
+		//sendString(hCOMDongle, "2:fs0\n");
+		//sendString(hCOMDongle, "3:fs0\n");
+		//sendString(hCOMDongle, "4:fs0\n");
 	}
 	prints(L"COM init end\r\n\r\n");
 }

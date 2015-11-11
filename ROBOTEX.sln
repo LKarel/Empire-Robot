@@ -43,6 +43,7 @@ Global
 		{FD412D90-4E85-4B98-90BE-3B9E44E536B6}.Release|x64.ActiveCfg = Release|x64
 		{FD412D90-4E85-4B98-90BE-3B9E44E536B6}.Release|x64.Build.0 = Release|x64
 		{FD412D90-4E85-4B98-90BE-3B9E44E536B6}.Release|x86.ActiveCfg = Release|Win32
+		{FD412D90-4E85-4B98-90BE-3B9E44E536B6}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

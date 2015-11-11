@@ -86,6 +86,7 @@ HWND minRadioButton;
 HWND maxRadioButton;
 HWND radioCheckBox;
 HWND hwndEditID = NULL;
+HWND stateStatusGUI;
 
 BOOLEAN calibrating = FALSE;	//state variable
 BOOLEAN whitenThresholdPixels;	//whether to make the selected pixels white during calibration
@@ -108,7 +109,7 @@ enum {
 	ID_TRACKBAR_VALUE, ID_RADIOBOXGROUP_MINMAX, ID_RADIOBOX_MIN, ID_RADIOBOX_MAX, ID_BUTTON_SAVE,
 	ID_BUTTON_RESET, ID_RADIOBOXGROUP_OBJECTSELECTOR, ID_RADIOBOX_BALLS, ID_RADIOBOX_GOALSBLUE, ID_RADIOBOX_GOALSYELLOW,
 	ID_RADIOBOX_LINES, ID_CHECKBOX_WHITEN, ID_CHECKBOX_RADIO, ID_EDIT_ID, ID_BALLS_PIXELCOUNT, ID_GOALSBLUE_PIXELCOUNT,
-	ID_GOALSYELLOW_PIXELCOUNT, ID_LINES_PIXELCOUNT
+	ID_GOALSYELLOW_PIXELCOUNT, ID_LINES_PIXELCOUNT, ID_STATUS_TEXT
 };
 
 objectCollection balls, goalsBlue, goalsYellow, ballsShare, goalsBlueShare, goalsYellowShare; //local data structure for holding objects and shared structures
@@ -144,14 +145,16 @@ void analyzePixelSurroundings(objectCollection &objects, colorValues &colors, in
 		}
 		//change all the pixels before to the new object index
 		pBufferCopy[x + 640 * y] = index + MAKEOBJID(objectType);
+				//((DWORD*)g_pBuffer)[x + y * 640] = index * 5; //test
 		objects.data[index].pixelcount += 1;
 		objects.data[index].x += x;
 		objects.data[index].y += y;
 		for (int x2 = x - 1; x2 >= 0 && pBufferCopy[x2 + 640 * y] &&
 			GETOBJID(pBufferCopy[x2 + 640 * y]) == objectType; --x2) {
 			pBufferCopy[x2 + 640 * y] = index + MAKEOBJID(objectType);
+					//((DWORD*)g_pBuffer)[x2 + y * 640] = index * 5; //test
 			objects.data[index].pixelcount += 1;
-			objects.data[index].x += x;
+			objects.data[index].x += x2;
 			objects.data[index].y += y;
 		}
 		//change all the pixels forward in the line to the object index,
@@ -163,7 +166,7 @@ void analyzePixelSurroundings(objectCollection &objects, colorValues &colors, in
 			float saturation = SATURATION(red, green, blue);
 			float value = VALUE(red, green, blue);
 
-			if (!(colors.hueMax >= hue && hue >= colors.hueMin &&
+			if (!(colors.hueMax >= hue && hue >= colors.hueMin && //pixel doesn't fit the object so 
 				colors.saturationMax >= saturation && saturation >= colors.saturationMin &&
 				colors.valueMax >= value && value >= colors.valueMin)) {
 				--x;
@@ -173,6 +176,7 @@ void analyzePixelSurroundings(objectCollection &objects, colorValues &colors, in
 			objects.data[index].x += x;
 			objects.data[index].y += y;
 			pBufferCopy[x + 640 * y] = index + MAKEOBJID(objectType);
+					//((DWORD*)g_pBuffer)[x + y  * 640] = index * 5; //test
 			int index2 = OBJECTINDEX(pBufferCopy[x + (y - 1) * 640]);
 			//there are objects with different indexes on the current pixel and below it
 			if (GETOBJID(pBufferCopy[x + (y - 1) * 640]) == objectType &&
@@ -184,9 +188,12 @@ void analyzePixelSurroundings(objectCollection &objects, colorValues &colors, in
 				objects.data[index2] = {};
 				//set the last line of the object from the line under to the proper index, so that when
 				//it is encoutered again, it is interpreted as the correct object
-				for (int x2 = x; x2 <= 640 && GETOBJID(pBufferCopy[x2 + (y - 1) * 640]) == objectType &&
-					OBJECTINDEX(pBufferCopy[x2 + (y - 1) * 640]) == index2; ++x2) {
-					pBufferCopy[x2 + (y - 1) * 640] = index + MAKEOBJID(objectType);
+				for (int x2 = x; x2 <= 640; ++x2) {
+					if (GETOBJID(pBufferCopy[x2 + (y - 1) * 640]) == objectType &&
+						OBJECTINDEX(pBufferCopy[x2 + (y - 1) * 640]) == index2) {
+						pBufferCopy[x2 + (y - 1) * 640] = index + MAKEOBJID(objectType);
+								//((DWORD*)g_pBuffer)[x2 + (y - 1) * 640] = index * 5; //test
+					}
 				}
 			}
 		}
@@ -199,11 +206,13 @@ void analyzePixelSurroundings(objectCollection &objects, colorValues &colors, in
 			objects.data[index].y += y;
 			objects.data[index].pixelcount += 1;
 			pBufferCopy[x + 640 * y] = index + MAKEOBJID(objectType);
+			//((DWORD*)g_pBuffer)[x + y * 640] = OBJECTINDEX(g_pBuffer[x + y * 640]) * 5; //test
 		}
 		//start a new object
 		else {
 			++(objects.count);
 			pBufferCopy[x + 640 * y] = objects.count + MAKEOBJID(objectType);
+			//((DWORD*)g_pBuffer)[x + y * 640] = OBJECTINDEX(g_pBuffer[x + y * 640]) * 5; //test
 			if (objects.count == objects.size)
 				doubleObjectBufferSize(&objects);
 			objects.data[objects.count].pixelcount += 1;
@@ -657,9 +666,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		HWND button3 = CreateWindowEx(0, L"BUTTON", L"CALIB",
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 40, 65, 20, hwnd, (HMENU)ID_BUTTON3, hInstance, NULL);
 
+		stateStatusGUI = CreateWindowExW(0, L"STATIC", L"stopped",
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 80, 110, 20, hwnd, (HMENU)ID_STATUS_TEXT, hInstance, NULL);
+
 		//set the proper window position
 		RECT rc;
-		rc.left = 0, rc.top = 0, rc.right = 640 + 640 + 65, rc.bottom = 680;
+		rc.left = 0, rc.top = 0, rc.right = 640 + 640 + 65 + 45, rc.bottom = 680;
 		AdjustWindowRectEx(&rc, GetWindowLong(hwnd, GWL_STYLE), FALSE, GetWindowLong(hwnd, GWL_EXSTYLE));
 		SetWindowPos(hwnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER);
 		//SendMessage(hwndEdit, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), 0);
@@ -851,7 +863,8 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
 			10 + 10 + 300, 25, 80, 30, hwnd, (HMENU)ID_CHECKBOX_WHITEN, hInstance, NULL);
 		if (whitenThresholdPixels)
-			SendMessage(linesRadioButton, BM_SETCHECK, BST_CHECKED, 0);
+			SendMessage(whitenCheckBox, BM_SETCHECK, BST_CHECKED, 0);
+		prints(L"whiten %d\n", whitenThresholdPixels);
 
 		//boxes for the pixelcount thresholds of various objects
 		wchar_t tempBuffer[32] = {};
