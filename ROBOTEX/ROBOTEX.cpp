@@ -26,6 +26,9 @@ int ballsPixelCount = 0, goalsBluePixelCount = 0, goalsYellowPixelCount = 0, lin
 OVERLAPPED osReader = { };
 OVERLAPPED osWrite = { };
 OVERLAPPED osStatus = { };
+OVERLAPPED osReaderDongle = {};
+OVERLAPPED osWriteDongle = {};
+OVERLAPPED osStatusDongle = {};
 LARGE_INTEGER timerFrequency;
 LARGE_INTEGER startCounter;
 LARGE_INTEGER stopCounter;
@@ -33,6 +36,7 @@ LARGE_INTEGER chargingStart;
 LARGE_INTEGER chargingStop;
 
 DWORD dwCommEvent = 0; //variable for the WaitCommEvent, stores the type of the event that occurred
+DWORD dwCommEventDongle = 0; //variable for the WaitCommEvent, stores the type of the event that occurred
 int listenToRadio; //whether to listen to commands from the radio or not
 char* currentID;
 drivingState currentDrivingState;
@@ -85,15 +89,15 @@ int main() {
 	//Create the GUI in a separate thread
 	GUIThread = CreateThread(NULL, 0, GUICamera, 0, 0, NULL);
 	//Wait for the GUI to initialize
-WaitForSingleObject(readySignal, INFINITE);
-prints(L"Testing printing\r\n\r\n");
+	WaitForSingleObject(readySignal, INFINITE);
+	prints(L"Testing printing\r\n\r\n");
 
-//initialize the state and start testing the robot
-state = lookForBall;
-test();
+	//initialize the state and start testing the robot
+	state = lookForBall;
+	test();
 
-//Don't exit this thread before the GUI
-WaitForSingleObject(GUIThread, INFINITE);
+	//Don't exit this thread before the GUI
+	WaitForSingleObject(GUIThread, INFINITE);
 }
 
 void test() {
@@ -297,17 +301,17 @@ void testSingleBallTrack() {
 				convertToFloorCoordinates(x, y, floorX, floorY);
 				x -= 320, y -= 240;
 				//prints(L"Goal x: %d\n", x);
-				if (abs(x) < 15) {
+				if (floorX > 0 && fabs(floorY) < 15.0 && !(goalsBlueShare.count == 1 && goalsYellowShare.count == 1)) {
 					state = kickBall;
 					prints(L"Kicking\n");
 				}
 				else {
-					rotateAroundFront(-60.0 * tanhf(x / 130.0));
+					rotateAroundFront(-60.0 * tanhf(x / 130.0) * fabs(tanhf(x / 130.0)));
 				}
 			}
 			else {
-				state = kickBall;
-				prints(L"Kicking\n");
+				state = lookForBall;
+				prints(L"Looking for ball\n");
 			}
 		}
 		if (state == kickBall) {
@@ -385,17 +389,27 @@ bool isLineInFront() {
 }
 
 bool checkIsBallInDribbler() {
-	return FALSE;
-	sendString(hCOMDongle, "9:bl\n");
+	sendString(hCOMDongle, "bl\n");
 	char buffer[32] = {};
-	DWORD bytesRead;
+	DWORD bytesRead = 0;
 	receiveString(hCOMDongle, buffer, bytesRead);
-	if (lstrcmpA(buffer, "9:bl1")) {
+	if (lstrcmpA(buffer, "<bl:1>\n") == 0) {
 		return TRUE;
 	}
 	else {
 		return FALSE;
 	}
+	//return FALSE;
+	//sendString(hCOMDongle, "9:bl\n");
+	//char buffer[32] = {};
+	//DWORD bytesRead;
+	//receiveString(hCOMDongle, buffer, bytesRead);
+	//if (lstrcmpA(buffer, "9:bl1")) {
+	//	return TRUE;
+	//}
+	//else {
+	//	return FALSE;
+	//}
 	//float floorX, floorY;
 
 	//if (ballsShare.count > 0) {
@@ -428,9 +442,9 @@ void dribblerOFF() {
 }
 
 void discharge() {
-	for (int i = 0; i < 3; ++i) {
-		sendString(hCOMDongle, "9:k100\n");
-		Sleep(10);
+	for (int i = 0; i < 5; ++i) {
+		sendString(hCOMDongle, "9:k200\n");
+		Sleep(20);
 	}
 }
 
@@ -617,13 +631,13 @@ void initCOMPort() {
 	if (!SetCommTimeouts(hCOMDongle, &timeouts)) {
 		prints(L"Dongle SetCommTimeouts failed with error %d.\n", GetLastError());
 	}
-	else //turn off the failsafe of the engine controllers
-	{
-		//sendString(hCOMDongle, "1:fs0\n");
-		//sendString(hCOMDongle, "2:fs0\n");
-		//sendString(hCOMDongle, "3:fs0\n");
-		//sendString(hCOMDongle, "4:fs0\n");
-	}
+	//else //turn off the failsafe of the engine controllers
+	//{
+	//	sendString(hCOMDongle, "1:fs0\n");
+	//	sendString(hCOMDongle, "2:fs0\n");
+	//	sendString(hCOMDongle, "3:fs0\n");
+	//	sendString(hCOMDongle, "4:fs0\n");
+	//}
 	prints(L"Dongle COM init end\r\n\r\n");
 }
 

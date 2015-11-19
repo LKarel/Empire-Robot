@@ -44,6 +44,12 @@ DWORD HSVtoRGB(float, float, float);
 void saveToFileColorThresholds();
 void readFromFileColorThresholds();
 void drawCross(int x, int y, int color, BYTE* buffer);
+void charge();
+void discharge();
+void kick(int microSeconds);
+void dribblerON();
+void dribblerOFF();
+bool checkRoundness(objectCollection& balls, int i, DWORD* analyzeBuffer, int objectID);
 
 //variables specific to the way the camera is set up, it's what Windows DirectShow uses
 IMediaControl *pControl = NULL;
@@ -60,6 +66,10 @@ DWORD *houghTransformBuffer;	//buffer for the values of the Hough transform, x a
 BYTE *DShowBuffer; //the buffer that the dshow displays on the screen
 BOOL start = TRUE;
 DWORD* pixelsTest;
+LARGE_INTEGER timerFrequency2;
+LARGE_INTEGER startFPSCounter;
+LARGE_INTEGER stopFPSCounter;
+DWORD FPSCount;
 
 //headers for the bitmap, used if you want to write an image to a file or create a bitmap for displaying
 BITMAPINFOHEADER bmih;
@@ -88,6 +98,7 @@ HWND maxRadioButton;
 HWND radioCheckBox;
 HWND hwndEditID = NULL;
 HWND stateStatusGUI;
+HWND statusFPS;
 
 BOOLEAN calibrating = FALSE;	//state variable
 BOOLEAN whitenThresholdPixels;	//whether to make the selected pixels white during calibration
@@ -106,11 +117,12 @@ extern int ballsPixelCount, goalsBluePixelCount, goalsYellowPixelCount, linesPix
 HANDLE writeMutex = CreateMutex(NULL, FALSE, NULL);
 
 enum {
-	ID_EDITCHILD, ID_BUTTON1, ID_BUTTON2, ID_BUTTON3, ID_BUTTON_DONE, ID_TRACKBAR_HUE, ID_TRACKBAR_SATURATION,
+	ID_EDITCHILD, ID_BUTTON_START, ID_BUTTON_STOP, ID_BUTTON_CALIBRATE, ID_BUTTON_DONE, ID_TRACKBAR_HUE, ID_TRACKBAR_SATURATION,
 	ID_TRACKBAR_VALUE, ID_RADIOBOXGROUP_MINMAX, ID_RADIOBOX_MIN, ID_RADIOBOX_MAX, ID_BUTTON_SAVE,
 	ID_BUTTON_RESET, ID_RADIOBOXGROUP_OBJECTSELECTOR, ID_RADIOBOX_BALLS, ID_RADIOBOX_GOALSBLUE, ID_RADIOBOX_GOALSYELLOW,
 	ID_RADIOBOX_LINES, ID_CHECKBOX_WHITEN, ID_CHECKBOX_RADIO, ID_EDIT_ID, ID_BALLS_PIXELCOUNT, ID_GOALSBLUE_PIXELCOUNT,
-	ID_GOALSYELLOW_PIXELCOUNT, ID_LINES_PIXELCOUNT, ID_STATUS_TEXT
+	ID_GOALSYELLOW_PIXELCOUNT, ID_LINES_PIXELCOUNT, ID_STATUS_TEXT, ID_BUTTON_CHARGE, ID_BUTTON_KICK, ID_BUTTON_DISCHARGE,
+	ID_BUTTON_DRIBBLER_ON, ID_BUTTON_DRIBBLER_OFF, ID_STATUS_FPS
 };
 
 objectCollection balls, goalsBlue, goalsYellow, ballsShare, goalsBlueShare, goalsYellowShare; //local data structure for holding objects and shared structures
@@ -289,7 +301,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 	ballCount = 0;
 	//printf("balls count before: %d\n", balls.count);
 	for (int i = 0; i <= balls.count; ++i) {
-		if (balls.data[i].pixelcount >= ballsPixelCount) {
+		if (balls.data[i].pixelcount >= ballsPixelCount && checkRoundness(balls, i, pBufferCopy, 0)) { // && checkRoundness(balls, i, pBufferCopy, 0)
 			balls.data[ballCount] = balls.data[i];
 			balls.data[ballCount].x /= balls.data[ballCount].pixelcount;
 			balls.data[ballCount].y /= balls.data[ballCount].pixelcount;
@@ -417,17 +429,56 @@ void reverse(BYTE* buffer) {
 			pixBuffer[640 - 1 - x + 640 * (480 - 1 - y)] = pixel;
 		}
 	}
+}
 
+//check if there are enough pixels in a square with side twice the radius of the ball based on the pixelcount
+bool checkRoundness(objectCollection& balls, int i, DWORD* analyzeBuffer, int objectID) {
+	int size = int(pow(balls.data[i].pixelcount/PI, 0.5));
+	int counter = 0;
+	int posx = balls.data[i].x / balls.data[i].pixelcount;
+	int posy = balls.data[i].y / balls.data[i].pixelcount;
+	for (int y = posy - size; y < posy + size; ++y) {
+		for (int x = posx - size; x < posx + size; ++x) {
+			if (x >= 0 && x < 640 && y >= 0 && y < 480) {
+				DWORD temp = analyzeBuffer[x + y * 640];
+				if (GETOBJID(temp) == objectID && OBJECTINDEX(temp)) {
+					++counter;
+				}
+			}
+		}
+	}
+	if (counter > balls.data[i].pixelcount*0.5) {
+		return TRUE;
+	}
+	else {
+		return FALSE;
+	}
 }
 
 void smoothen(int range, BYTE* source, BYTE* destination) {
+	DWORD* pixSource = (DWORD*)source;
+	DWORD* pixDestination = (DWORD*)destination;
 	for (int y = 0; y < 480; ++y) {
-		for (int y2 = 0; y2 < range; y2++) {
-			for (int x2 = 0; x2 < range; x2++) {
-
-			}
-		}
+		int redavg = 0, greenavg = 0, blueavg = 0;
 		for (int x = 0; x < 640; ++x) {
+			int red = 0, green = 0, blue = 0, counter = 0;
+			for (int y2 = 0; y2 < range; y2++) {
+				for (int x2 = 0; x2 < range; x2++) {
+					int x3 = x - range / 2 + x2, y3 = y - range / 2 + y2;
+					if (x3 >= 0 && x3 < 640 && y3 >= 0 && y3 < 480) {
+						DWORD pixel = pixSource[x3 + y3*(640)];
+						blue += pixel & 0xFF;
+						green += (pixel >> 8) & 0xFF;
+						red += (pixel >> 16) & 0xFF;
+						counter++;
+					}
+				}
+			}
+			red = red / counter;
+			green = green / counter;
+			blue = blue / counter;
+
+			pixDestination[x + y * 640] = blue | (green << 8) | (red << 16);
 		}
 	}
 }
@@ -469,6 +520,23 @@ public:
 		reverse(pBuffer); //because the cameras on the robot are upside down
 		DShowBuffer = pBuffer;
 
+		//update FPS rate after every 5 images
+		++FPSCount;
+		if (FPSCount % 5 == 0) {
+			wchar_t data[32] = {};
+			QueryPerformanceCounter(&stopFPSCounter);
+			double time = double(stopFPSCounter.QuadPart - startFPSCounter.QuadPart) / double(timerFrequency2.QuadPart);
+			float FPS = 5.0 / time;
+			swprintf_s(data, L"FPS: %.2f", FPS);
+			SetWindowText(statusFPS, data);
+			startFPSCounter.QuadPart = stopFPSCounter.QuadPart;
+		}
+
+		//smoothen the image by averaging over pixel values
+		//smoothen(15, pBuffer, g_pBuffer);
+
+		CopyMemory(g_pBuffer, pBuffer, BufferLen);
+
 		//if (g_pBuffer != NULL) { //for displaying the image from the analyzeTest function, for testing purposes
 		//	memcpy(g_pBuffer, pixelsTest, 640*480*4);
 		//}
@@ -477,7 +545,6 @@ public:
 		//if the calibrator is open, black out the pixels that aren't in the range of the current selection
 		//in the calibrator window
 		if (calibrating && g_pBuffer != NULL) {
-			CopyMemory(g_pBuffer, pBuffer, BufferLen);
 			for (DWORD *pixBuffer = (DWORD*)g_pBuffer; pixBuffer < (DWORD*)g_pBuffer + BufferLen/4; ++pixBuffer) {
 				DWORD pixel = *pixBuffer;
 				BYTE blue = pixel & 0xFF, green = (pixel >> 8) & 0xFF, red = (pixel >> 16) & 0xFF;
@@ -511,7 +578,6 @@ public:
 		//if not calibrating, analyze each new image and draw crosses where the balls are at
 		else if(g_pBuffer != NULL)
 		{
-			CopyMemory(g_pBuffer, pBuffer, BufferLen);
 			analyzeImage(Time, pBuffer, BufferLen);
 			//prints(L"analyzed %d\n", balls.count);
 			for (int i = 0; i < balls.count; ++i) {
@@ -606,6 +672,10 @@ DWORD WINAPI GUICamera(LPVOID lpParameter)
 	houghTransformBuffer = (DWORD*)HeapAlloc(GetProcessHeap(), NULL, 150 * 150 * 4);
 	activeColors = &ballColors;
 
+	//set up timers
+	QueryPerformanceFrequency(&timerFrequency2);
+	QueryPerformanceCounter(&startFPSCounter);
+
 	//analyzeTest();
 	//Sleep(-1);
 
@@ -699,14 +769,26 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 		//buttons in the upper right
 		HWND button1 = CreateWindowEx(0, L"BUTTON", L"START",
-			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 0, 65, 20, hwnd, (HMENU)ID_BUTTON1, hInstance, NULL);
+			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 0, 100, 20, hwnd, (HMENU)ID_BUTTON_START, hInstance, NULL);
 		HWND button2 = CreateWindowEx(0, L"BUTTON", L"STOP",
-			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 20, 65, 20, hwnd, (HMENU)ID_BUTTON2, hInstance, NULL);
+			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 20, 100, 20, hwnd, (HMENU)ID_BUTTON_STOP, hInstance, NULL);
 		HWND button3 = CreateWindowEx(0, L"BUTTON", L"CALIB",
-			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 40, 65, 20, hwnd, (HMENU)ID_BUTTON3, hInstance, NULL);
+			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 40, 100, 20, hwnd, (HMENU)ID_BUTTON_CALIBRATE, hInstance, NULL);
+		HWND button4 = CreateWindowEx(0, L"BUTTON", L"CHARGE",
+			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 60, 100, 20, hwnd, (HMENU)ID_BUTTON_CHARGE, hInstance, NULL);
+		HWND button5 = CreateWindowEx(0, L"BUTTON", L"DISCHARGE",
+			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 80, 100, 20, hwnd, (HMENU)ID_BUTTON_KICK, hInstance, NULL);
+		HWND button6 = CreateWindowEx(0, L"BUTTON", L"KICK",
+			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 100, 100, 20, hwnd, (HMENU)ID_BUTTON_DISCHARGE, hInstance, NULL);
+		HWND button7 = CreateWindowEx(0, L"BUTTON", L"DRIB ON",
+			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 120, 100, 20, hwnd, (HMENU)ID_BUTTON_DRIBBLER_ON, hInstance, NULL);
+		HWND button8 = CreateWindowEx(0, L"BUTTON", L"DRIB OFF",
+			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 140, 100, 20, hwnd, (HMENU)ID_BUTTON_DRIBBLER_OFF, hInstance, NULL);
 
 		stateStatusGUI = CreateWindowExW(0, L"STATIC", L"stopped",
-			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 80, 110, 20, hwnd, (HMENU)ID_STATUS_TEXT, hInstance, NULL);
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 180, 110, 20, hwnd, (HMENU)ID_STATUS_TEXT, hInstance, NULL);
+		statusFPS = CreateWindowExW(0, L"STATIC", L"0.00",
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 200, 110, 20, hwnd, (HMENU)ID_STATUS_FPS, hInstance, NULL);
 
 		//set the proper window position
 		RECT rc;
@@ -729,21 +811,41 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		return 0;
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
-		case ID_BUTTON1:
+		case ID_BUTTON_START:
 			ResetEvent(stopSignal);
 			SetEvent(startSignal);
 			SetFocus(hwndMain);
 			return 0;
-		case ID_BUTTON2:
+		case ID_BUTTON_STOP:
 			ResetEvent(startSignal);
 			SetEvent(stopSignal);
 			SetFocus(hwndMain);
 			return 0;
-		case ID_BUTTON3:
+		case ID_BUTTON_CALIBRATE:
 			ShowWindow(hwndCalibrate, SW_SHOW);
 			calibrating = TRUE;
 			ResetEvent(calibratingEndSignal);
 			SetEvent(calibratingSignal);
+			return 0;
+		case ID_BUTTON_CHARGE:
+			charge();
+			SetFocus(hwndMain);
+			return 0;
+		case ID_BUTTON_KICK:
+			kick(5000);
+			SetFocus(hwndMain);
+			return 0;
+		case ID_BUTTON_DISCHARGE:
+			discharge();
+			SetFocus(hwndMain);
+			return 0;
+		case ID_BUTTON_DRIBBLER_ON:
+			dribblerON();
+			SetFocus(hwndMain);
+			return 0;
+		case ID_BUTTON_DRIBBLER_OFF:
+			dribblerOFF();
+			SetFocus(hwndMain);
 			return 0;
 		}
 		break;
