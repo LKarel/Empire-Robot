@@ -59,6 +59,7 @@ DWORD *pBufferCopy;		//temporary buffer used by the image analysis function, tag
 DWORD *houghTransformBuffer;	//buffer for the values of the Hough transform, x axis is radius, y is angle in radians
 BYTE *DShowBuffer; //the buffer that the dshow displays on the screen
 BOOL start = TRUE;
+DWORD* pixelsTest;
 
 //headers for the bitmap, used if you want to write an image to a file or create a bitmap for displaying
 BITMAPINFOHEADER bmih;
@@ -419,6 +420,18 @@ void reverse(BYTE* buffer) {
 
 }
 
+void smoothen(int range, BYTE* source, BYTE* destination) {
+	for (int y = 0; y < 480; ++y) {
+		for (int y2 = 0; y2 < range; y2++) {
+			for (int x2 = 0; x2 < range; x2++) {
+
+			}
+		}
+		for (int x = 0; x < 640; ++x) {
+		}
+	}
+}
+
 //this is the class that is needed for grabbing frames, the method BufferCB gets called everytime
 //there is a new frame ready with a pointer to the data
 class SampleGrabberCallback : public ISampleGrabberCB
@@ -455,6 +468,12 @@ public:
 	{
 		reverse(pBuffer); //because the cameras on the robot are upside down
 		DShowBuffer = pBuffer;
+
+		//if (g_pBuffer != NULL) { //for displaying the image from the analyzeTest function, for testing purposes
+		//	memcpy(g_pBuffer, pixelsTest, 640*480*4);
+		//}
+		//return S_OK;
+
 		//if the calibrator is open, black out the pixels that aren't in the range of the current selection
 		//in the calibrator window
 		if (calibrating && g_pBuffer != NULL) {
@@ -526,19 +545,39 @@ SampleGrabberCallback g_GrabberCB;
 
 const wchar_t CLASS_NAME[] = L"Main Window Class";
 
-void analyzeTest() {
-	DWORD *pixels = (DWORD*) HeapAlloc(GetProcessHeap(), NULL, 640 * 480 * 4);
-	DWORD color = HSVtoRGB((lineColors.hueMin + lineColors.hueMax) / 2, 
-		(lineColors.saturationMin + lineColors.saturationMax) / 2,
-		(lineColors.valueMin + lineColors.valueMax) / 2);
-
-	drawLine(7, 560, color, (BYTE*)pixels);
-	analyzeImage(0, (BYTE*)pixels, 640 * 480 * 4);
-	for (int i = 0; i < lines.count; ++i) {
-		wprintf(L"line: %d, radius = %d, angle = %.2f, pixelcount = %d\n", i + 1, lines.data[i].radius, 
-			lines.data[i].angle, lines.data[i].pixelcount);
+void drawRectangle(DWORD* pixBuffer, int x, int y, int width, int height, float angle, DWORD color) {
+	for (int y2 = 0; y2 < height; ++y2) {
+		for (int x2 = 0; x2 < width; ++x2) {
+			int x3 = x + x2*cosf(angle) + y2*sinf(angle);
+			int y3 = y + x2*sinf(angle) + y2*cosf(angle);
+			if (x3 >= 0 && x3 < 640 && y3 >= 0 && y3 < 480) {
+				pixBuffer[x3 + (640)*(y3)] = color;
+			}
+		}
 	}
-	HeapFree(GetProcessHeap(), NULL, pixels);
+}
+
+
+void analyzeTest() {
+	ballsPixelCount = 1;
+	ballColors.hueMin = 0.3, ballColors.hueMax = 0.6;
+	ballColors.saturationMin = 0.3, ballColors.saturationMax = 0.6;
+	ballColors.valueMin = 0.3, ballColors.valueMax = 0.6;
+
+	pixelsTest = (DWORD*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 640 * 480 * 4);
+
+	DWORD color = HSVtoRGB((ballColors.hueMin + ballColors.hueMax) / 2,
+		(ballColors.saturationMin + ballColors.saturationMax) / 2,
+		(ballColors.valueMin + ballColors.valueMax) / 2);
+
+	wprintf(L"zero %X\n", pixelsTest[5+(640)*5]);
+	drawRectangle(pixelsTest, 0, 0, 200, 200, 0 * PI/180.0, 0x0000FF);
+	wprintf(L"zero %X\n", pixelsTest[0]);
+	analyzeImage(0, (BYTE*)pixelsTest, 640 * 480 * 4);
+	for (int i = 0; i < balls.count; ++i) {
+		wprintf(L"ball: %d, x = %d, y = %d, pixelcount = %d\n", i + 1, balls.data[i].x, 
+			balls.data[i].y, balls.data[i].pixelcount);
+	}
 }
 
 DWORD WINAPI GUICamera(LPVOID lpParameter)
