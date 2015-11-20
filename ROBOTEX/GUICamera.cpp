@@ -99,6 +99,7 @@ HWND radioCheckBox;
 HWND hwndEditID = NULL;
 HWND stateStatusGUI;
 HWND statusFPS;
+HWND statusBall;
 
 BOOLEAN calibrating = FALSE;	//state variable
 BOOLEAN whitenThresholdPixels;	//whether to make the selected pixels white during calibration
@@ -122,7 +123,7 @@ enum {
 	ID_BUTTON_RESET, ID_RADIOBOXGROUP_OBJECTSELECTOR, ID_RADIOBOX_BALLS, ID_RADIOBOX_GOALSBLUE, ID_RADIOBOX_GOALSYELLOW,
 	ID_RADIOBOX_LINES, ID_CHECKBOX_WHITEN, ID_CHECKBOX_RADIO, ID_EDIT_ID, ID_BALLS_PIXELCOUNT, ID_GOALSBLUE_PIXELCOUNT,
 	ID_GOALSYELLOW_PIXELCOUNT, ID_LINES_PIXELCOUNT, ID_STATUS_TEXT, ID_BUTTON_CHARGE, ID_BUTTON_KICK, ID_BUTTON_DISCHARGE,
-	ID_BUTTON_DRIBBLER_ON, ID_BUTTON_DRIBBLER_OFF, ID_STATUS_FPS
+	ID_BUTTON_DRIBBLER_ON, ID_BUTTON_DRIBBLER_OFF, ID_STATUS_FPS, ID_STATUS_BALL
 };
 
 objectCollection balls, goalsBlue, goalsYellow, ballsShare, goalsBlueShare, goalsYellowShare; //local data structure for holding objects and shared structures
@@ -301,7 +302,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 	ballCount = 0;
 	//printf("balls count before: %d\n", balls.count);
 	for (int i = 0; i <= balls.count; ++i) {
-		if (balls.data[i].pixelcount >= ballsPixelCount && checkRoundness(balls, i, pBufferCopy, 0)) { // && checkRoundness(balls, i, pBufferCopy, 0)
+		if (balls.data[i].pixelcount >= ballsPixelCount) { // && checkRoundness(balls, i, pBufferCopy, 0)
 			balls.data[ballCount] = balls.data[i];
 			balls.data[ballCount].x /= balls.data[ballCount].pixelcount;
 			balls.data[ballCount].y /= balls.data[ballCount].pixelcount;
@@ -534,8 +535,9 @@ public:
 
 		//smoothen the image by averaging over pixel values
 		//smoothen(15, pBuffer, g_pBuffer);
-
-		CopyMemory(g_pBuffer, pBuffer, BufferLen);
+		if (g_pBuffer != NULL) {
+			CopyMemory(g_pBuffer, pBuffer, BufferLen);
+		}
 
 		//if (g_pBuffer != NULL) { //for displaying the image from the analyzeTest function, for testing purposes
 		//	memcpy(g_pBuffer, pixelsTest, 640*480*4);
@@ -592,7 +594,7 @@ public:
 			for (int i = 0; i < lines.count; ++i) {
 				drawLine(lines.data[i].angle, lines.data[i].radius, 0xCC00CC, g_pBuffer); //purple
 			}
-			drawCross(320, 240, 0, g_pBuffer);
+			//drawCross(320, 240, 0, g_pBuffer);
 			//drawLine(4, 52, 0x000000FF, g_pBuffer);
 			SetEvent(newImageAnalyzed);
 			GdiFlush();
@@ -789,6 +791,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 180, 110, 20, hwnd, (HMENU)ID_STATUS_TEXT, hInstance, NULL);
 		statusFPS = CreateWindowExW(0, L"STATIC", L"0.00",
 			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 200, 110, 20, hwnd, (HMENU)ID_STATUS_FPS, hInstance, NULL);
+		statusBall = CreateWindowExW(0, L"STATIC", L"Ball 0",
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 220, 110, 20, hwnd, (HMENU)ID_STATUS_BALL, hInstance, NULL);
 
 		//set the proper window position
 		RECT rc;
@@ -832,7 +836,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 			SetFocus(hwndMain);
 			return 0;
 		case ID_BUTTON_KICK:
-			kick(5000);
+			kick(5);
 			SetFocus(hwndMain);
 			return 0;
 		case ID_BUTTON_DISCHARGE:
