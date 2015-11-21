@@ -197,12 +197,12 @@ void testSingleBallTrack() {
 		goals = currentID[1] == 'A' ? goalsBlueShare : goalsYellowShare;
 
 		if (state == lookForBall) {
-			//prints(L"Looking for ball\n");
-			SetWindowText(stateStatusGUI, L"Looking for ball");
 			if (isBallInDribbler) {
 				state = lookForGoal;
 			}
 			else {
+				//prints(L"Looking for ball\n");
+				SetWindowText(stateStatusGUI, L"Looking for ball");
 				nearestBallFloorX = 0;
 				if (ballsShare.count == 0) {
 					rotateAroundCenter(-90);
@@ -224,7 +224,7 @@ void testSingleBallTrack() {
 					}
 					else {
 						rotateAroundCenter(-90);
-						movingTime = 4.0;
+						movingTime = 4.5;
 						QueryPerformanceCounter(&startCounter);
 						nearestBallFloorX = 0, nearestBallFloorY = 0; //initialize the values so that new nearest can be found the next time
 						state = lookForNearBall;
@@ -235,12 +235,12 @@ void testSingleBallTrack() {
 		}
 		if (state == lookForNearBall) { //there wasn't a ball less than 1m away, turn until you find one, finally turn to the nearest
 			//prints(L"Looking for a near ball\n");
-			SetWindowText(stateStatusGUI, L"Looking for a near ball");
-			QueryPerformanceCounter(&stopCounter);
 			if (isBallInDribbler) {
 				state = lookForGoal;
 			}
 			else {
+				SetWindowText(stateStatusGUI, L"Looking for a near ball");
+				QueryPerformanceCounter(&stopCounter);
 				for (int i = 0; i < ballsShare.count; ++i) {
 					float floorX, floorY;
 					convertToFloorCoordinates(ballsShare.data[i].x, ballsShare.data[i].y, floorX, floorY);
@@ -258,7 +258,7 @@ void testSingleBallTrack() {
 				}
 				else if (double(stopCounter.QuadPart - startCounter.QuadPart) / double(timerFrequency.QuadPart) > movingTime) { //if we have rotated 360 degrees
 					rotateAroundCenter(-90);
-					movingTime = 4.0;
+					movingTime = 5;
 					QueryPerformanceCounter(&startCounter);
 					state = turnToNearestBall;
 					prints(L"Turning back to nearest ball\n");
@@ -267,12 +267,12 @@ void testSingleBallTrack() {
 			}
 		}
 		if (state == turnToNearestBall) { //we didn't find a ball closer than 1m, turn to the nearest one we found
-			//prints(L"Turning back to nearest ball\n");
-			SetWindowText(stateStatusGUI, L"Turning back to nearest ball");
 			if (isBallInDribbler) {
 				state = lookForGoal;
 			}
 			else {
+				//prints(L"Turning back to nearest ball\n");
+				SetWindowText(stateStatusGUI, L"Turning back to nearest ball");
 				if (nearestBallFloorX == 0) {
 					prints(L"Didn't find any balls after turning around\n");
 					state = lookForBall;
@@ -364,7 +364,7 @@ void testSingleBallTrack() {
 		if (state == kickBall) {
 			SetWindowText(stateStatusGUI, L"Kicking");
 			QueryPerformanceCounter(&chargingStop);
-			if (double(chargingStop.QuadPart - chargingStart.QuadPart) / double(timerFrequency.QuadPart) < 0.3) {//not charged, wait more
+			if (double(chargingStop.QuadPart - chargingStart.QuadPart) / double(timerFrequency.QuadPart) < 0.2) {//not charged, wait more
 				continue;
 			}
 			prints(L"KICKED\n");
@@ -492,7 +492,7 @@ void kick(int microSeconds) { //kick for a certain amount of microseconds
 }
 
 void charge() {
-	sendString(hCOMDongle, "9:c\n");
+	sendString(hCOMDongle, "9:co1\n");
 }
 
 void dribblerON() {

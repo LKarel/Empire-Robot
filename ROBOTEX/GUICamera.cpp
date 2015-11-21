@@ -534,8 +534,8 @@ public:
 		}
 
 		//smoothen the image by averaging over pixel values
-		//smoothen(15, pBuffer, g_pBuffer);
 		if (g_pBuffer != NULL) {
+			//smoothen(2, pBuffer, g_pBuffer);
 			CopyMemory(g_pBuffer, pBuffer, BufferLen);
 		}
 
