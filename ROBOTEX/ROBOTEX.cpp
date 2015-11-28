@@ -7,12 +7,6 @@
 #define PI (3.1415927)
 #define SQRT2 (1.4142135)
 
-float wheelRadius = 3.5 / 100.0; //in meters
-float baseRadius = 14.0 / 100.0; //base radius in meters from the center to the wheel
-float height = 17.0 / 100.0; //height in meters of the camera
-float cameraAngle = 25.0 * PI / 180.0; //the angle in radians that the camera is down with respect to the horizontal, height of camera is 17cm, midpoint of the image is 37 cm away
-float angleOfView = 59.0 * PI / 180.0; //the horizontal angle of view in radians, it saw a 77cm wide rule 67cm away along the floor
-
 HANDLE readySignal = CreateEventW(NULL, FALSE, FALSE, NULL);
 HANDLE newImageAnalyzed = CreateEventW(NULL, FALSE,FALSE,NULL);
 HANDLE startSignal = CreateEventW(NULL, FALSE, FALSE, NULL);
@@ -23,7 +17,8 @@ HANDLE GUIThread;
 HANDLE hCOMDongle;
 HANDLE hCOMRadio;
 int ballsPixelCount = 0, goalsBluePixelCount = 0, goalsYellowPixelCount = 0, linesPixelCount = 0;
-bool isBallInDribbler;
+bool isBallInDribbler, ignoreBall;
+float ignoreX, ignoreY;
 OVERLAPPED osReader = { };
 OVERLAPPED osWrite = { };
 OVERLAPPED osStatus = { };
@@ -39,6 +34,7 @@ LARGE_INTEGER chargingStop;
 
 DWORD dwCommEvent = 0; //variable for the WaitCommEvent, stores the type of the event that occurred
 DWORD dwCommEventDongle = 0; //variable for the WaitCommEvent, stores the type of the event that occurred
+bool charged;
 int listenToRadio; //whether to listen to commands from the radio or not
 char* currentID;
 drivingState currentDrivingState;
@@ -66,7 +62,9 @@ void checkCommand(char* readBuffer);
 boolean validCommand(char* readBuffer);
 void readCOM(HANDLE hCOM, char* readBuffer, DWORD bytesToRead, DWORD &bytesRead);
 void rotateAroundCenter(float angularVelocity);
-void findNearestObject(int& currentx, int& currenty, objectCollection& objects);
+void findNearestObjectToOldObject(int& currentx, int& currenty, objectCollection& objects);
+void findNearestFloorObjectToOldObject(float& currentx, float& currenty, objectCollection& objects);
+int findNearestFloorBall(float& nearestBallX, float& nearestBallY, int& currentx, int& currenty);
 void findLargestObject(int& currentx, int& currenty, objectCollection& objects);
 void convertToFloorCoordinates(int currentx, int currenty, float& floorX, float& floorY);
 void driveToFloorXY(float floorX, float floorY, float angle);
@@ -74,15 +72,20 @@ void rotateAroundFront(float angularVelocity);
 void rotateAroundFrontAndMoveForward(float angularVelocity, float speedForward);
 //bool checkIsBallInDribbler();
 bool isLineInFront();
-void dribblerON();
-void dribblerOFF();
+//void dribblerON();
+//void dribblerOFF();
 void charge();
 void discharge();
 void kick(int microSeconds);
+void kick();
 void handleMainBoardCommunication();
-bool isLineBetweenRobotAndBall(int currentx, int currenty);
+//bool isLineBetweenRobotAndBall(int currentx, int currenty);
+float time(LARGE_INTEGER start, LARGE_INTEGER stop);
 
-enum State { lookForBall, lookForNearBall, turnToNearestBall, lookForGoal, driveToBall, kickBall, rotate180 } state;
+enum State { driveToNearestBall, lookForBall, scanForNearBall, lookForNearBallIgnoreStraight, turnToNearestBall, lookForGoal, driveToBall, kickBall, rotate180,
+			 nextTurnLeft, nextTurnRight} state, state2;
+
+bool attackBlue;
 
 struct vector {
 	float e1;
@@ -112,7 +115,9 @@ void test() {
 	QueryPerformanceFrequency(&timerFrequency);
 	HANDLE waitHandles[3] = { osStatus.hEvent, startSignal, osStatusDongle.hEvent };
 	while (true) {
-		setSpeedBoth(currentDrivingState);
+		if (hCOMDongle != INVALID_HANDLE_VALUE) {
+			setSpeedBoth(currentDrivingState);
+		}
 		switch (WaitForMultipleObjects(3, waitHandles, FALSE, 1000)) {
 		case WAIT_OBJECT_0:
 			prints(L"radio event %X\n", dwCommEvent);
@@ -123,8 +128,8 @@ void test() {
 			prints(L"Start signal arrived.\n");
 			SetWindowText(stateStatusGUI, L"started");
 			testSingleBallTrack();
-			dribblerOFF();
-			discharge();
+			//dribblerOFF();
+			//discharge();
 			break;
 		case WAIT_OBJECT_0 + 2: //info from the main board controller
 			//prints(L"main board COM event %X\n", dwCommEventDongle);
@@ -136,48 +141,50 @@ void test() {
 }
 
 void testSingleBallTrack() {
-	HANDLE waitHandles[5] = { newImageAnalyzed, stopSignal, osStatus.hEvent, calibratingSignal, osStatusDongle.hEvent };
+	HANDLE waitHandles[5] = { osStatus.hEvent, stopSignal, osStatusDongle.hEvent, calibratingSignal, newImageAnalyzed };
 	int currentx = 320, currenty = 0;
 	int timeOut = 50;
 	float movingTime; //timeout after sending each command
 	objectCollection goals;
 	float nearestBallFloorX = 0, nearestBallFloorY = 0;
+	ignoreX = 0, ignoreY = 0;
+	LARGE_INTEGER ignoreStart = {}, ignoreStop = {}, kickingStart = {}, kickingStop = {};
 
-	state = lookForBall;
-	prints(L"Looking for ball\n");
-	SetWindowText(stateStatusGUI, L"Looking for ball");
-	dribblerON();
+	state = driveToNearestBall;
+	isBallInDribbler = false;
+	prints(L"Started, going to the nearest ball\n");
+	SetWindowText(stateStatusGUI, L"Started to nearest");
+	//dribblerON();
+	charged = false, ignoreBall = false;
 	charge();
 	QueryPerformanceCounter(&chargingStart);
 	sendString(hCOMDongle, "9:bl\n");
 
 	while (true) {
-		QueryPerformanceCounter(&chargingStop);
-		if (double(chargingStop.QuadPart - chargingStart.QuadPart) / double(timerFrequency.QuadPart) > 10.0) {//too many seconds passed from the last charge, charge again
-			charge();
-			QueryPerformanceCounter(&chargingStart);
-		}
+		//QueryPerformanceCounter(&chargingStop);
+		//if (state == kickBall && double(chargingStop.QuadPart - chargingStart.QuadPart) / double(timerFrequency.QuadPart) > 5.0) {//too many seconds passed from the last charge, charge again
+		//	charge();
+		//	QueryPerformanceCounter(&chargingStart);
+		//}
 		switch (WaitForMultipleObjects(5, waitHandles, FALSE, timeOut)) {
-		case WAIT_OBJECT_0: //new image analyzed
-			if (calibrating) {
-				setSpeedBoth(currentDrivingState);
-			}
-			else {
-				break;
-			}
+		case WAIT_OBJECT_0: //start of a new command from the radio detected
+								//ResetEvent(osStatus.hEvent);
+			prints(L"radio event %X\n", dwCommEvent);
+			receiveCommand(); //receive and interpret the command
+			WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus); //listen to new events, ie beginning character
+			continue;
 		case WAIT_OBJECT_0 + 1: //stop signal
 			prints(L"Stop signal arrived.\n");
 			SetWindowText(stateStatusGUI, L"stopped");
-			currentDrivingState.angle = 0, currentDrivingState.speed = 0, currentDrivingState.vx = 0, 
+			currentDrivingState.angle = 0, currentDrivingState.speed = 0, currentDrivingState.vx = 0,
 				currentDrivingState.vy = 0, currentDrivingState.angularVelocity = 0;
 			setSpeedAngle(currentDrivingState);
 			ResetEvent(startSignal);
 			return;
-		case WAIT_OBJECT_0 + 2: //start of a new command from the radio detected
-			//ResetEvent(osStatus.hEvent);
-			prints(L"radio event %X\n", dwCommEvent);
-			receiveCommand(); //receive and interpret the command
-			WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus); //listen to new events, ie beginning character
+		case WAIT_OBJECT_0 + 2: //info from the main board controller
+								//prints(L"main board COM event %X\n", dwCommEvent);
+			handleMainBoardCommunication();
+			WaitCommEvent(hCOMDongle, &dwCommEventDongle, &osStatusDongle); //listen to new events, ie beginning character
 			continue;
 		case WAIT_OBJECT_0 + 3: //calibrating signal
 			SetWindowText(stateStatusGUI, L"calibrating");
@@ -187,14 +194,50 @@ void testSingleBallTrack() {
 			setSpeedBoth(currentDrivingState);
 			//WaitForSingleObject(calibratingEndSignal, INFINITE);
 			continue;
-		case WAIT_OBJECT_0 + 4: //info from the main board controller
-			//prints(L"main board COM event %X\n", dwCommEvent);
-			handleMainBoardCommunication();
-			WaitCommEvent(hCOMDongle, &dwCommEventDongle, &osStatusDongle); //listen to new events, ie beginning character
-			continue;
+		case WAIT_OBJECT_0 + 4: //new image analyzed
+			if (calibrating) {
+				setSpeedBoth(currentDrivingState);
+			}
+			else {
+				break;
+			}
 		}
 
-		goals = currentID[1] == 'A' ? goalsBlueShare : goalsYellowShare;
+		if (attackBlue) { //set the side
+			goals = goalsBlueShare;
+		}
+		else {
+			goals = goalsYellowShare;
+		}
+
+		if (ignoreBall) {
+			QueryPerformanceCounter(&ignoreStop);
+			if (time(ignoreStart, ignoreStop) > 1.0) {
+				ignoreBall = false;
+			}
+			else {
+				findNearestFloorObjectToOldObject(ignoreX, ignoreY, ballsShare);
+			}
+		}
+		
+		if (state == driveToNearestBall) {
+			if (isBallInDribbler) {
+				state = lookForGoal;
+			}
+			else {
+				//drive to the nearest ball in the beginning
+				SetWindowText(stateStatusGUI, L"Started to nearest");
+				nearestBallFloorX = 0;
+				if (ballsShare.count == 0) {
+					state = lookForBall;
+				}
+				else {
+					state = driveToBall;
+					//prints(L"Nearest ball floorX: %.2f, floorY: %.2f, currentx: %d, currenty: %d\n", nearestBallFloorX, nearestBallFloorY, currentx, currenty);
+					prints(L"Driving to ball\n");
+				}
+			}
+		}
 
 		if (state == lookForBall) {
 			if (isBallInDribbler) {
@@ -208,32 +251,24 @@ void testSingleBallTrack() {
 					rotateAroundCenter(-90);
 				}
 				else {
-					for (int i = 0; i < ballsShare.count; ++i) {
-						float floorX, floorY;
-						convertToFloorCoordinates(ballsShare.data[i].x, ballsShare.data[i].y, floorX, floorY);
-						if ((nearestBallFloorX == 0 || floorX*floorX + floorY*floorY < nearestBallFloorX*nearestBallFloorX + nearestBallFloorY*nearestBallFloorY) &&
-							ballsShare.data[i].x > 2 && !isLineBetweenRobotAndBall(ballsShare.data[i].x, ballsShare.data[i].y)) {
-							nearestBallFloorX = floorX, nearestBallFloorY = floorY;
-							currentx = ballsShare.data[i].x, currenty = ballsShare.data[i].y;
-						}
-					}
-					if (nearestBallFloorX*nearestBallFloorX + nearestBallFloorY*nearestBallFloorY < 1.0 && nearestBallFloorX != 0) { //if closer than 1 meter
+					findNearestFloorBall(nearestBallFloorX, nearestBallFloorY, currentx, currenty);
+					if (nearestBallFloorX*nearestBallFloorX + nearestBallFloorY*nearestBallFloorY < 3.0 && nearestBallFloorX != 0) { //if closer than 1 meter
 						state = driveToBall;
 						//prints(L"Nearest ball floorX: %.2f, floorY: %.2f, currentx: %d, currenty: %d\n", nearestBallFloorX, nearestBallFloorY, currentx, currenty);
 						prints(L"Driving to ball\n");
 					}
 					else {
-						rotateAroundCenter(-90);
-						movingTime = 4.5;
+						rotateAroundCenter(-70);
+						movingTime = 6;
 						QueryPerformanceCounter(&startCounter);
 						nearestBallFloorX = 0, nearestBallFloorY = 0; //initialize the values so that new nearest can be found the next time
-						state = lookForNearBall;
+						state = scanForNearBall;
 						prints(L"Looking for a near ball\n");
 					}
 				}
 			}
 		}
-		if (state == lookForNearBall) { //there wasn't a ball less than 1m away, turn until you find one, finally turn to the nearest
+		if (state == scanForNearBall) { //there wasn't a ball less than 1m away, turn until you find one, finally turn to the nearest
 			//prints(L"Looking for a near ball\n");
 			if (isBallInDribbler) {
 				state = lookForGoal;
@@ -244,26 +279,32 @@ void testSingleBallTrack() {
 				for (int i = 0; i < ballsShare.count; ++i) {
 					float floorX, floorY;
 					convertToFloorCoordinates(ballsShare.data[i].x, ballsShare.data[i].y, floorX, floorY);
-					if ((nearestBallFloorX == 0 || floorX*floorX + floorY*floorY < nearestBallFloorX*nearestBallFloorX + nearestBallFloorY*nearestBallFloorY) && ballsShare.data[i].x > 2
-						&& !isLineBetweenRobotAndBall(ballsShare.data[i].x, ballsShare.data[i].y)) {
+					if ((nearestBallFloorX == 0 || floorX*floorX + floorY*floorY < nearestBallFloorX*nearestBallFloorX + nearestBallFloorY*nearestBallFloorY)
+						&& !ballsShare.data[i].isObjectAcrossLine && !(ignoreBall && nearestBallFloorX == ignoreX && nearestBallFloorY == ignoreY)) {
 						nearestBallFloorX = floorX, nearestBallFloorY = floorY;
 						QueryPerformanceCounter(&nearestFoundTimeCounter);
 						currentx = ballsShare.data[i].x, currenty = ballsShare.data[i].y;
 					}
 				}
-				if (nearestBallFloorX != 0 && nearestBallFloorX*nearestBallFloorX + nearestBallFloorY*nearestBallFloorY < 1.0) { //if closer than 1 meter
+				if (nearestBallFloorX != 0 && nearestBallFloorX*nearestBallFloorX + nearestBallFloorY*nearestBallFloorY < 3.0) { //if closer than 1 meter
 					//prints(L"Found nearest ball floorX: %.2f, floorY: %.2f, currentx: %d, currenty: %d\n", nearestBallFloorX, nearestBallFloorY, currentx, currenty);
 					state = driveToBall;
 					prints(L"Driving to ball\n");
 				}
-				else if (double(stopCounter.QuadPart - startCounter.QuadPart) / double(timerFrequency.QuadPart) > movingTime) { //if we have rotated 360 degrees
-					rotateAroundCenter(-90);
-					movingTime = 5;
+				else if (time(startCounter, stopCounter) > movingTime) { //if we have rotated 360 degrees
+					//rotateAroundCenter(-70);
+					movingTime = 6.0;
 					QueryPerformanceCounter(&startCounter);
 					state = turnToNearestBall;
+					if (time(nearestFoundTimeCounter, startCounter) > movingTime / 2) {
+						state2 = nextTurnRight;
+					}
+					else {
+						state2 = nextTurnLeft;
+					}
 					prints(L"Turning back to nearest ball\n");
 				}
-				rotateAroundCenter(-90);
+				rotateAroundCenter(-70);
 			}
 		}
 		if (state == turnToNearestBall) { //we didn't find a ball closer than 1m, turn to the nearest one we found
@@ -284,23 +325,23 @@ void testSingleBallTrack() {
 					float floorX, floorY;
 					convertToFloorCoordinates(ballsShare.data[i].x, ballsShare.data[i].y, floorX, floorY);
 					//not further than 0.2 m from the nearest ball
-					if (pow(floorX*floorX + floorY*floorY, 0.5) < pow(nearestBallFloorX*nearestBallFloorX + nearestBallFloorY*nearestBallFloorY, 0.5) + 0.2 && ballsShare.data[i].x > 2) {
+					if (pow(floorX*floorX + floorY*floorY, 0.5) < pow(nearestBallFloorX*nearestBallFloorX + nearestBallFloorY*nearestBallFloorY, 0.5) + 0.3) {
 						currentx = ballsShare.data[i].x, currenty = ballsShare.data[i].y;
 						state = driveToBall;
 						prints(L"Driving to ball\n");
 					}
 				}
-				if (double(stopCounter.QuadPart - startCounter.QuadPart) / double(timerFrequency.QuadPart) > movingTime) {//something went wrong, didn't find a nearest ball, look again
+				if (time(startCounter, stopCounter) > movingTime) {//something went wrong, didn't find a nearest ball, look again
 					prints(L"Couldn't turn back to the nearest ball.\n");
 					state = lookForBall;
 					prints(L"Looking for ball\n");
 				}
 				if (state == turnToNearestBall) {
-					if (double(nearestFoundTimeCounter.QuadPart - startCounter.QuadPart) / double(timerFrequency.QuadPart) > movingTime / 2) {
-						rotateAroundCenter(-90);
+					if (state2 == nextTurnRight) {
+						rotateAroundCenter(-70);
 					}
 					else {
-						rotateAroundCenter(90);
+						rotateAroundCenter(70);
 					}
 				}
 			}
@@ -313,10 +354,9 @@ void testSingleBallTrack() {
 				//prints(L"Driving to ball\n");
 				SetWindowText(stateStatusGUI, L"driving to ball");
 				float floorX, floorY;
-				findNearestObject(currentx, currenty, ballsShare);
-				convertToFloorCoordinates(currentx, currenty, floorX, floorY);
-				prints(L"Floor coordinates x: %.2f, y: %.2f, currentx: %d, currenty: %d\n", floorX, floorY, currentx, currenty);
-				if (ballsShare.count == 0) {
+				//findNearestObject(currentx, currenty, ballsShare);
+				//prints(L"Floor coordinates x: %.2f, y: %.2f, currentx: %d, currenty: %d\n", floorX, floorY, currentx, currenty);
+				if (findNearestFloorBall(floorX, floorY, currentx, currenty) == 0) {
 					//prints(L"Drive state, but ballcount zero, starting to look for ball.\n");
 					state = lookForBall;
 					prints(L"Looking for ball\n");
@@ -326,14 +366,14 @@ void testSingleBallTrack() {
 					state = lookForGoal;
 					prints(L"Looking for goal\n");
 				}
-				else if (isLineInFront()) {
-					prints(L"Line in front\n");
-					QueryPerformanceCounter(&startCounter);
-					state = rotate180;
-					currentDrivingState.angularVelocity = -90, currentDrivingState.speed = 0;
-					setSpeedAngle(currentDrivingState);
-					movingTime = 1.5;
-				}
+				//else if (isLineInFront()) {
+				//	prints(L"Line in front\n");
+				//	QueryPerformanceCounter(&startCounter);
+				//	state = rotate180;
+				//	currentDrivingState.angularVelocity = -90, currentDrivingState.speed = 0;
+				//	setSpeedAngle(currentDrivingState);
+				//	movingTime = 1.5;
+				//}
 				else {
 					driveToFloorXY(floorX, floorY, NULL);
 				}
@@ -348,12 +388,15 @@ void testSingleBallTrack() {
 				findLargestObject(x, y, goals);
 				convertToFloorCoordinates(x, y, floorX, floorY);
 				//prints(L"Goal x: %d\n", x);
-				if (y > 0 && floorX > 0 && fabs(floorY) < 10.0 / 100.0 && !(goalsBlueShare.count == 1 && goalsYellowShare.count == 1)) {
+				if (!(goalsBlueShare.count == 1 && goalsYellowShare.count == 1) &&
+					(y > 0 && floorX > 0 && fabs(floorY) < 18.0 / 100.0 || abs(x-320) <= 50)) {
 					state = kickBall;
+					QueryPerformanceCounter(&kickingStart);
 					prints(L"Kicking\n");
 				}
 				else {
-					rotateAroundFront(-60.0 * tanhf((x-320) / 130.0) * fabs(tanhf((x-320) / 130.0)));
+					int sign = x > 320 ? -1 : 1;
+					rotateAroundFront(sign * (60.0 * pow(fabs(tanhf((x - 320) / 130.0)),2) + 20));
 				}
 			}
 			else {
@@ -363,14 +406,27 @@ void testSingleBallTrack() {
 		}
 		if (state == kickBall) {
 			SetWindowText(stateStatusGUI, L"Kicking");
-			QueryPerformanceCounter(&chargingStop);
-			if (double(chargingStop.QuadPart - chargingStart.QuadPart) / double(timerFrequency.QuadPart) < 0.2) {//not charged, wait more
+			if (!isBallInDribbler) {
+				state = lookForBall;
+			}
+			if (!charged) {//not charged, wait more
+				//QueryPerformanceCounter(&kickingStop);
+				//if (time(kickingStart, kickingStop) > 1.5) {
+				//	kick();
+				//	charge();
+				//}
 				continue;
 			}
+			kick();
 			prints(L"KICKED\n");
-			kick(5);
 			charge();
-			QueryPerformanceCounter(&chargingStart);
+
+			isBallInDribbler = false;
+			sendString(hCOMDongle, "9:bl\n");
+
+			ignoreX = 15.0 / 100.0, ignoreY = 0;
+			QueryPerformanceCounter(&ignoreStart);
+
 			state = lookForBall;
 			prints(L"Looking for ball\n");
 		}
@@ -435,20 +491,20 @@ bool isLineInFront() {
 	return FALSE;
 }
 
-bool isLineBetweenRobotAndBall(int currentx, int currenty) { //check if there is a line between the robot and the ball
-	int ballx = currentx - 320, bally = currenty - 240;
-	for (int i = 0; i < linesShare.count; ++i) {
-		float floorX, floorY;
-		float angle = linesShare.data[i].angle, radius = linesShare.data[i].radius;
-		float lineXOnLowestLine = fabs(angle - PI / 2) < 1.0 / 1000.0 ? 1000.0 : (radius - (-320)*sinf(angle)) / cosf(angle); //x coordinate of the first line on the screen
-		float lineXOnBallLine = fabs(angle - PI / 2) < 1.0 / 1000.0 ? 1000.0 : (radius - (bally)*sinf(angle)) / cosf(angle); //x coordinate of the line with the ball center on it
-		if ((lineXOnBallLine - ballx)*(lineXOnLowestLine) < 0) {
-			prints(L"Line between ball and line currentx: %d, currenty: %d\n", currentx, currenty);
-			return TRUE;
-		}
-	}
-	return FALSE;
-}
+//bool isLineBetweenRobotAndBall(int currentx, int currenty) { //check if there is a line between the robot and the ball
+//	int ballx = currentx - 320, bally = currenty - 240;
+//	for (int i = 0; i < linesShare.count; ++i) {
+//		float floorX, floorY;
+//		float angle = linesShare.data[i].angle, radius = linesShare.data[i].radius;
+//		float lineXOnLowestLine = fabs(angle - PI / 2) < 1.0 / 1000.0 ? 1000.0 : (radius - (-320)*sinf(angle)) / cosf(angle); //x coordinate of the first line on the screen
+//		float lineXOnBallLine = fabs(angle - PI / 2) < 1.0 / 1000.0 ? 1000.0 : (radius - (bally)*sinf(angle)) / cosf(angle); //x coordinate of the line with the ball center on it
+//		if ((lineXOnBallLine - ballx)*(lineXOnLowestLine) < 0) {
+//			prints(L"Line between ball and line currentx: %d, currenty: %d\n", currentx, currenty);
+//			return TRUE;
+//		}
+//	}
+//	return FALSE;
+//}
 
 bool checkIsBallInDribbler() {
 	sendString(hCOMDongle, "9:bl\n");
@@ -487,24 +543,29 @@ bool checkIsBallInDribbler() {
 
 void kick(int microSeconds) { //kick for a certain amount of microseconds
 	char buffer[16] = {};
-	sprintf_s(buffer, "9:k%d\n", microSeconds);
+	sprintf_s(buffer, "9:k\n", microSeconds);
 	sendString(hCOMDongle, buffer);
 }
 
+void kick() { //kick for the default duration
+	sendString(hCOMDongle, "9:k\n");
+}
+
 void charge() {
-	sendString(hCOMDongle, "9:co1\n");
+	charged = false;
+	sendString(hCOMDongle, "9:c\n");
 }
 
-void dribblerON() {
-	sendString(hCOMDongle, "9:dm255\n");
-}
-
-void dribblerOFF() {
-	sendString(hCOMDongle, "9:dm0\n");
-}
+//void dribblerON() {
+//	sendString(hCOMDongle, "9:dm255\n");
+//}
+//
+//void dribblerOFF() {
+//	sendString(hCOMDongle, "9:dm0\n");
+//}
 
 void discharge() {
-	kick(1);
+	sendString(hCOMDongle, "9:dc\n");
 }
 
 void rotateAroundFrontAndMoveForward(float angularVelocity, float speedForward) {
@@ -525,13 +586,13 @@ void driveToFloorXY(float floorX, float floorY, float angle) {
 	floorX = floorX < 1 / 100 ? 1 / 100 : floorX;
 	floorY = fabs(floorY) < 1 / 300 ? 0.0 : floorY;
 	float dist = powf(floorX*floorX + floorY*floorY, 0.5); //distance to the ball
-	float speedMultiplier = pow(fabs(tanhf(dist/0.4)),2); //use square root of the distance for modulating speed
+	float speedMultiplier = pow(fabs(tanhf(dist/0.4)),1); //use square root of the distance for modulating speed
 	float speedBase = 0.8; //max speed
 	float speed = speedBase*speedMultiplier;
 	float time = dist / speed; //time to reach the ball
 	float angleToBall = atanf(floorY / floorX)/PI*180.0;
-	currentDrivingState.angularVelocity = 2.5 * angleToBall / time; //turn fast engouh so that we have turned by the angle to the ball by half the distance
-	prints(L"Angle to ball: %.2f, angular velocity: %.2f, dist: %.2f, floorX: %.2f, floorY: %.2f\n", angleToBall, currentDrivingState.angularVelocity, dist, floorX, floorY);
+	currentDrivingState.angularVelocity = 1.5 * angleToBall / time; //turn fast engouh so that we have turned by the angle to the ball by half the distance
+	//prints(L"Angle to ball: %.2f, angular velocity: %.2f, dist: %.2f, floorX: %.2f, floorY: %.2f\n", angleToBall, currentDrivingState.angularVelocity, dist, floorX, floorY);
 	currentDrivingState.speed = speed;
 	currentDrivingState.angle = angleToBall;
 	setSpeedAngle(currentDrivingState);
@@ -542,7 +603,7 @@ void driveToFloorXY(float floorX, float floorY, float angle) {
 void convertToFloorCoordinates(int currentx, int currenty, float& floorX, float& floorY) {
 	//x, y, z are the coordinates on the floor, x axis straight ahead, y axis to the left
 	vector eCameraNormal = { cosf(cameraAngle), 0, -sinf(cameraAngle) };	//basis vector in the direction the camera is pointing
-	vector ex = { 0, -1 * tanf(angleOfView / 2) / 320, 0 };		//the vector per pixel along the x direction from the center of the image considering camera normal vector is length 1
+	vector ex = { 0, -1 * tanf(angleOfView / 2) / 320, 0 };		//the vector in floor coordinates per pixel along the x direction of the image from the center of the image considering camera normal vector is length 1
 	vector ey = { sinf(cameraAngle) * tanf(angleOfView / 2) / 320, 0, cosf(cameraAngle) * tanf(angleOfView / 2) / 320 };	//same in the y direction
 
 	vector ball = { (currenty - 240) * ey.e1 + eCameraNormal.e1, 
@@ -550,7 +611,7 @@ void convertToFloorCoordinates(int currentx, int currenty, float& floorX, float&
 					(currenty - 240) * ey.e3 + eCameraNormal.e3 };
 	ball.e3 = fabs(ball.e3) < 1 / 10000 ? 1 / 10000 : fabs(ball.e3);
 
-	floorX = ball.e1 * height / ball.e3, floorY = ball.e2 * height / ball.e3;
+	floorX = ball.e1 * cameraHeight / ball.e3, floorY = ball.e2 * cameraHeight / ball.e3;
 }
 
 //rotates around the center with the given angular velocity in degs/s
@@ -559,8 +620,8 @@ void rotateAroundCenter(float angularVelocity) {
 	setSpeedAngle(currentDrivingState);
 }
 
-//finds an object nearest to the old x, y values
-void findNearestObject(int& currentx, int& currenty, objectCollection& objects) {
+//finds an object nearest to the old image x, y values
+void findNearestObjectToOldObject(int& currentx, int& currenty, objectCollection& objects) {
 	int minDist = (currentx - objects.data[0].x) * (currentx - objects.data[0].x) + (currenty - objects.data[0].y) * (currenty - objects.data[0].y), minIndex = 0;
 	for (int i = 0; i < objects.count; ++i) {
 		int dist = (currentx - objects.data[i].x) * (currentx - objects.data[i].x) + (currenty - objects.data[i].y) * (currenty - objects.data[i].y);
@@ -572,6 +633,44 @@ void findNearestObject(int& currentx, int& currenty, objectCollection& objects) 
 	currentx = objects.data[minIndex].x, currenty = objects.data[minIndex].y;
 }
 
+//finds an object nearest to the old floor x, y values
+void findNearestFloorObjectToOldObject(float& floorX, float& floorY, objectCollection& objects) {
+	if (objects.count == 0)
+		return;
+	float floorX2 = 0, floorY2 = 0;
+	float minDist = 0;
+	int minIndex = 0;
+	for (int i = 0; i < objects.count; ++i) {
+		convertToFloorCoordinates(objects.data[i].x, objects.data[i].y, floorX2, floorY2);
+		float dist = (floorX - floorX2) * (floorX - floorX2) + (floorY - floorY2) * (floorY - floorY2), minIndex = 0;
+		if (minDist == 0 || dist < minDist) {
+			minDist = dist;
+			minIndex = i;
+		}
+	}
+	convertToFloorCoordinates(objects.data[minIndex].x, objects.data[minIndex].y, floorX, floorY);
+}
+
+
+//finds the nearest ball to the robot
+int findNearestFloorBall(float& nearestFloorX, float& nearestFloorY, int& currentx, int& currenty) {
+	int ballCount = 0;
+	float nearestX = 0, nearestY = 0;
+	for (int i = 0; i < ballsShare.count; ++i) {
+		float floorX, floorY;
+		convertToFloorCoordinates(ballsShare.data[i].x, ballsShare.data[i].y, floorX, floorY);
+		if (!ballsShare.data[i].isObjectAcrossLine && !(ignoreBall && nearestX == ignoreX && nearestY == ignoreY)) {
+			ballCount++;
+			if ((nearestX == 0 || floorX*floorX + floorY*floorY < nearestX*nearestX + nearestY*nearestY)) {
+				nearestX = floorX, nearestY = floorY;
+				currentx = ballsShare.data[i].x, currenty = ballsShare.data[i].y;
+			}
+		}
+	}
+	nearestFloorX = nearestX, nearestFloorY = nearestY;
+	return ballCount;
+}
+
 //finds an object with the largest pixelcount
 void findLargestObject(int& x, int& y, objectCollection& objects) {
 	int largestPixelCount = 0;
@@ -581,6 +680,10 @@ void findLargestObject(int& x, int& y, objectCollection& objects) {
 			x = objects.data[i].x, y = objects.data[i].y;
 		}
 	}
+}
+
+float time(LARGE_INTEGER start, LARGE_INTEGER stop) {
+	return (float)(double(stop.QuadPart - start.QuadPart) / double(timerFrequency.QuadPart));
 }
 
 void handleMainBoardCommunication() {
@@ -607,6 +710,13 @@ void handleMainBoardCommunication() {
 				else if (lstrcmpA(buffer, "<9:bl:0>\n") == 0) {
 					isBallInDribbler = false;
 					SetWindowText(statusBall, L"Ball 0");
+				}
+				else if (lstrcmpA(buffer, "<9:c:0>\n") == 0) {
+					charged = true;
+				}
+				else if (lstrcmpA(buffer, "<9:cf>\n") == 0) {
+					charged = true;
+					prints(L"CHARGE TIMEOUT\n");
 				}
 				bytesReadTotal = 0;
 			}
@@ -648,6 +758,7 @@ void receiveCommand() { //the character 'a' was received from the radio, now rea
 		else {
 			if (length < 12) {
 				readCOM(hCOMRadio, readBuffer + start, 12, bytesRead);
+				prints(L"Checking command: %S, valid: %d\n", readBuffer + start, validCommand(readBuffer));
 				if (bytesRead + length < 12) {
 					return;
 				}
@@ -667,6 +778,7 @@ void receiveCommand() { //the character 'a' was received from the radio, now rea
 		}
 		if (length == 0) {
 			readCOM(hCOMRadio, readBuffer + start, 12, bytesRead);
+			prints(L"Checking command: %S, valid: %d\n", readBuffer + start, validCommand(readBuffer));
 			if (bytesRead < 12) {
 				return;
 			}
@@ -674,6 +786,7 @@ void receiveCommand() { //the character 'a' was received from the radio, now rea
 		}
 		if (start > 40) {
 			CopyMemory(readBuffer, readBuffer + start, length);
+			ZeroMemory(readBuffer + start, 128 - start);
 			start = 0;
 		}
 	}
@@ -687,8 +800,9 @@ void initCOMPort() {
 	timeouts.ReadIntervalTimeout = 15;
 	timeouts.ReadTotalTimeoutConstant = 15;
 	timeouts.ReadTotalTimeoutMultiplier = 15;
-	timeouts.WriteTotalTimeoutConstant = 15;
-	timeouts.WriteTotalTimeoutMultiplier = 15;
+	timeouts.WriteTotalTimeoutConstant = 60;
+	timeouts.WriteTotalTimeoutMultiplier = 25;
+
 
 	osReaderDongle.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
 	osWriteDongle.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
@@ -742,7 +856,6 @@ boolean validCommand(char* readBuffer) {
 	char tempBuffer[32] = {};
 	CopyMemory(tempBuffer, readBuffer, 12);
 	if (lstrcmpA(tempBuffer + 3, "STOP-----") != 0 && lstrcmpA(tempBuffer + 3, "START----") != 0) {
-		prints(L"here1");
 		return FALSE;
 	}
 	if (tempBuffer[0] != 'a') {
@@ -792,12 +905,12 @@ void sendString(HANDLE hComm, char* outputBuffer) {
 		if (GetLastError() != ERROR_IO_PENDING) {
 			prints(L"Main board sendString failed with error %X\n", GetLastError());
 		}
-		if (!GetOverlappedResult(hCOMDongle, &osWrite, &bytesWritten, TRUE)) {
+		else if (!GetOverlappedResult(hCOMDongle, &osWrite, &bytesWritten, TRUE)) {
 			prints(L"Main board sendString failed with error %X\n", GetLastError());
 		}
 	}
 	if (bytesWritten != len) {
-		prints(L"Main board sendString timeout\n");
+		prints(L"Main board sendString timeout: %S\n", outputBuffer);
 	}
 }
 
@@ -868,11 +981,6 @@ void setSpeedXY(drivingState state) {
 float calculateDirection(lineInfo line) {
 	int r = line.radius;
 	float angle = line.angle;
-
-	float height = 25 / 100; //height in meters
-	float cameraAngle = 10 * PI / 180; //the angle that the camera is down with respect to the horizontal
-	float angleOfView = 30 * PI / 180; //the horizontal angle of view
-
 									   //x, y, z are the coordinates on the floor, x axis straight ahead, y axis to the left
 	vector eCameraNormal = { cosf(cameraAngle), 0, -sinf(cameraAngle) };	//basis vector in the direction the camera is pointing
 	vector ex = { 0, -1, 0 };		//basis vector in the x direction of the camera image where the pixel x coordinate increases, so called image basis
@@ -908,11 +1016,11 @@ float calculateDirection(lineInfo line) {
 
 void initUSBRadio() {
 	COMMTIMEOUTS timeouts;
-	timeouts.ReadIntervalTimeout = 5;
-	timeouts.ReadTotalTimeoutConstant = 5;
-	timeouts.ReadTotalTimeoutMultiplier = 5;
-	timeouts.WriteTotalTimeoutConstant = 10;
-	timeouts.WriteTotalTimeoutMultiplier = 5;
+	timeouts.ReadIntervalTimeout = 40; //ms, max time before arrival of next byte
+	timeouts.ReadTotalTimeoutConstant = 15; //added to multiplier*bytes
+	timeouts.ReadTotalTimeoutMultiplier = 10; //ms times bytes
+	timeouts.WriteTotalTimeoutConstant = 15;
+	timeouts.WriteTotalTimeoutMultiplier = 10;
 
 	osReader.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
 	osWrite.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
@@ -1022,194 +1130,3 @@ void readCOM(HANDLE hCOM, char* readBuffer, DWORD bytesToRead, DWORD &bytesRead)
 		}
 	}
 }
-
-//no longer needed, the image processing is in the GUICamera file, done as soon as the frame arrives in BufferCB
-//void imageProcessingTest() {
-//	while (true) {
-//		//get the image after button 2 was pressed
-//		//WaitForSingleObject(button2Signal, INFINITE);
-//		//CopyMemory(doubleBuffer, editBuffer, 640 * 480 * 4);
-//		//prints(L"here\n");
-//		//Filters:
-//		//threshold(doubleBuffer);
-//		//calculateBrightness(editBuffer);
-//		//calculateHue(doubleBuffer);
-//		//calculateChroma(doubleBuffer);
-//		//calculateSaturation(editBuffer);
-//		//kMeans(2,5, doubleBuffer);
-//
-//		//display the image, copy editBuffer to the screen buffer g_pBuffer
-//		//SetEvent(setImageSignal);
-//	}
-//}
-//
-////Y' from the YUV HDTV BT.709 standard
-//void calculateBrightness(BYTE* buffer) {
-//	for (DWORD *pixBuffer = (DWORD *)buffer; pixBuffer < 640 * 480 + (DWORD *)buffer;++pixBuffer) {
-//		DWORD pixel = *pixBuffer;
-//		float brightness = 0.2126f*(pixel & 0xFF) + 0.7152f*((pixel >> 8) & 0xFF) + 0.0722f*((pixel >> 16) & 0xFF);
-//		*pixBuffer = (int)brightness*(1 + (1 << 8) + (1 << 16)); //grayscale image of pixel values
-//	}
-//}
-//
-////calculates the Y' values modulo some number
-//void smoother(BYTE* buffer) {
-//	for (DWORD *pixBuffer = (DWORD *)buffer; pixBuffer < 640 * 480 + (DWORD *)buffer;++pixBuffer) {
-//		DWORD pixel = *pixBuffer;
-//		DWORD brightness = (int)(0.2126f*(pixel & 0xFF) + 0.7152f*((pixel >> 8) & 0xFF) + 0.0722f*((pixel >> 16) & 0xFF));
-//		brightness = brightness - brightness % 32;
-//		*pixBuffer = pixel*(1 + (1 << 8) + (1 << 16)); //grayscale image of pixel values
-//	}
-//}
-//
-//void calculateChroma(BYTE* buffer) {
-//	for (DWORD *pixBuffer = (DWORD *)buffer; pixBuffer < 640 * 480 + (DWORD *)buffer;++pixBuffer) {
-//		DWORD pixel = *pixBuffer;
-//		DWORD chroma = max3((pixel & 0xFF), ((pixel >> 8) & 0xFF), ((pixel >> 16) & 0xFF))-
-//				min3((pixel & 0xFF), ((pixel >> 8) & 0xFF), ((pixel >> 16) & 0xFF));
-//
-//		//chroma = chroma - chroma % 20;
-//		*pixBuffer = chroma*(1 + (1 << 8) + (1 << 16)); //grayscale image of pixel values
-//
-//		//*pixBuffer = (chroma > 10) ? *pixBuffer : 0;
-//	}
-//}
-//
-//void calculateSaturation(BYTE* buffer) {
-//	for (DWORD *pixBuffer = (DWORD *)buffer; pixBuffer < 640 * 480 + (DWORD *)buffer;++pixBuffer) {
-//		DWORD pixel = *pixBuffer;
-//		float saturation = (float)(max3((pixel & 0xFF), ((pixel >> 8) & 0xFF), ((pixel >> 16) & 0xFF)) - //chroma/value
-//			min3((pixel & 0xFF), ((pixel >> 8) & 0xFF), ((pixel >> 16) & 0xFF))) /
-//			(0.2126f*(pixel & 0xFF) + 0.7152f*((pixel >> 8) & 0xFF) + 0.0722f*((pixel >> 16) & 0xFF));
-//
-//		//chroma = chroma - chroma % 20;
-//		*pixBuffer = (int)(saturation*255)*(1 + (1 << 8) + (1 << 16)); //grayscale image of pixel values
-//
-//		//*pixBuffer = (saturation > 0.5) ? *pixBuffer : 0;
-//	}
-//}
-//
-//void calculateHue(BYTE* buffer) {
-//	for (DWORD *pixBuffer = (DWORD *)buffer; pixBuffer < 640 * 480 + (DWORD *)buffer;++pixBuffer) {
-//		DWORD pixel = *pixBuffer;
-//		BYTE red = pixel & 0xFF, green = (pixel >> 8) & 0xFF, blue = (pixel >> 16) & 0xFF;
-//		float hue;
-//
-//		//calculates hue in the range 0 to 6
-//		if(red >= green && green >= blue && red > blue)	hue =	((float)(green - blue)  /	(red - blue));
-//		else if (green > red && red >= blue)	hue =  (2 - (float)(red -	blue) /	(green - blue));
-//		else if (green >= blue && blue > red)	hue =  (2 + (float)(blue -	red)  /	(green - red));
-//		else if (blue > green && green > red)	hue =  (4 - (float)(green - red)   /	(blue - red));
-//		else if (blue > red && red >= green)	hue =  (4 + (float)(red - green)   /	(blue - green));
-//		else if (red >= blue && blue > green)	hue =  (6 - (float)(blue - green)  /	(red - green));
-//		else hue = 0; //Hue when the image is gray red=green=blue
-//
-//		//pixel = 256 * hue / 6;
-//		//prints(L"%X %.2f \n", pixel, hue);
-//		//*pixBuffer = pixel*(1 + (1 << 8) + (1 << 16));
-//		*pixBuffer = (hue > 4 || hue < 2) ? *pixBuffer : 0;
-//	}
-//}
-//
-////k-Means algorithm, read on Wikipedia
-//void kMeans(int k, int iterations, BYTE* buffer) { //k centers, done for iterations iterations
-//	int *xCenter = new int[k], *yCenter = new int[k]; //centers of the k means
-//	DWORD *pixBuffer = (DWORD *)buffer;
-//
-//	int *xNewCenter = new int[k], *yNewCenter = new int[k], *CenterCount = new int[k]; //new centers and count for averaging later
-//	
-//	//for (int i = 0; i < k; ++i) {	//distribute centers around the corners
-//	//	if ((i + 3) % 4 < 2)
-//	//		xCenter[i] = 640;
-//	//	else
-//	//		xCenter[i] = 0;
-//	//	if (i % 4 < 2)
-//	//		yCenter[i] = 0;
-//	//	else
-//	//		yCenter[i] = 480;
-//	//}
-//
-//	for (int iterationCount = 0; iterationCount < iterations; ++iterationCount) {
-//		ZeroMemory(xNewCenter, sizeof(int)*k);
-//		ZeroMemory(yNewCenter, sizeof(int)*k);
-//		ZeroMemory(CenterCount, sizeof(int)*k);
-//		for (int currentY = 0; currentY < 480; ++currentY) {
-//			for (int currentX = 0; currentX < 640; ++currentX) {
-//				int pixel = 0xFF & pixBuffer[currentX + 640*currentY];
-//				int minDistanceSquared = (currentX-xCenter[0])*(currentX - xCenter[0])+ 
-//										 (currentY - yCenter[0])*(currentY - yCenter[0]);
-//				int minN = 0;
-//				for (int currentN = 1; currentN < k; ++currentN) {
-//					int DistanceSquared = (currentX - xCenter[currentN])*(currentX - xCenter[currentN]) +
-//										(currentY - yCenter[currentN])*(currentY - yCenter[currentN]);
-//					if (DistanceSquared < minDistanceSquared) {
-//						minN = currentN;
-//						minDistanceSquared = DistanceSquared;
-//					}
-//				}
-//				CenterCount[minN] += pixel;
-//				xNewCenter[minN] += pixel * currentX;
-//				yNewCenter[minN] += pixel * currentY;
-//			}
-//		}
-//
-//		//all pixels looped, calculate new centers:
-//		for (int currentN = 0; currentN < k; ++currentN) {
-//			xCenter[currentN] = (int)((float)xNewCenter[currentN] / CenterCount[currentN]);
-//			yCenter[currentN] = (int)((float)yNewCenter[currentN] / CenterCount[currentN]);
-//		}
-//	}
-//
-//	////draw the crosses
-//	//for (int currentN = 0; currentN < k; ++currentN) {
-//	//	drawCross(xCenter[currentN], yCenter[currentN], 0x00FFFFFF, editBuffer);
-//	//}
-//	delete[] xCenter, yCenter, xNewCenter, yNewCenter, CenterCount;
-//}
-//
-////void threshold(BYTE* buffer) {
-////	for (DWORD *pixBuffer = (DWORD*)buffer; pixBuffer < (DWORD*)buffer + 640*480; ++pixBuffer) {
-////		DWORD pixel = *pixBuffer;
-////		BYTE red = pixel & 0xFF, green = (pixel >> 8) & 0xFF, blue = (pixel >> 16) & 0xFF;
-////
-////		float hue;
-////		//calculates hue in the range 0 to 6
-////		if (red >= green && green >= blue && red > blue)	hue = ((float)(green - blue) / (red - blue));
-////		else if (green > red && red >= blue)	hue = (2 - (float)(red - blue) / (green - blue));
-////		else if (green >= blue && blue > red)	hue = (2 + (float)(blue - red) / (green - red));
-////		else if (blue > green && green > red)	hue = (4 - (float)(green - red) / (blue - red));
-////		else if (blue > red && red >= green)	hue = (4 + (float)(red - green) / (blue - green));
-////		else if (red >= blue && blue > green)	hue = (6 - (float)(blue - green) / (red - green));
-////		else hue = 0; //Hue when the image is gray red=green=blue
-////
-////		float saturation = (float)(max3(red, green, blue) - min3(red, green, blue))
-////			/ max3(red, green, blue);
-////
-////		float value = (float)max3(red, green, blue) / 255;
-////
-////		if (hue < hueMin || hue > hueMax || saturation < saturationMin || saturation > saturationMax ||
-////			value < valueMin || value > valueMax)
-////			*pixBuffer = 0;
-////	}
-////}
-//
-//void COMTesting() {
-//
-//
-//	HANDLE hComm = CreateFile(L"\\\\.\\COM12", GENERIC_READ | GENERIC_WRITE, 0, 0,
-//		OPEN_EXISTING, 0, 0);
-//	if (hComm == INVALID_HANDLE_VALUE)
-//		prints(L"INVALID HANDLE\n");
-//
-//	char *writeBuffer = "s\n";
-//	DWORD bytesWritten;
-//	WriteFile(hComm, writeBuffer, 4, &bytesWritten, NULL);
-//
-//	char *readBuffer[128]{};
-//	DWORD bytesRead;
-//	for (int i = 0;i < 10;++i) {
-//		ReadFile(hComm, readBuffer, 1, &bytesRead, NULL);
-//		prints(L"%s\n", readBuffer);
-//	}
-//}
-//
