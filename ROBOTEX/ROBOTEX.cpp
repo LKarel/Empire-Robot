@@ -31,6 +31,10 @@ LARGE_INTEGER nearestFoundTimeCounter;
 LARGE_INTEGER stopCounter;
 LARGE_INTEGER chargingStart;
 LARGE_INTEGER chargingStop;
+LARGE_INTEGER startFPS2Counter;
+LARGE_INTEGER stopFPS2Counter;
+
+LARGE_INTEGER lastSpeedSent;
 
 DWORD dwCommEvent = 0; //variable for the WaitCommEvent, stores the type of the event that occurred
 DWORD dwCommEventDongle = 0; //variable for the WaitCommEvent, stores the type of the event that occurred
@@ -43,7 +47,10 @@ extern lineCollection linesShare;
 extern HANDLE writeMutex;
 extern BOOLEAN calibrating;
 extern HWND stateStatusGUI;
+extern HWND goalGuessState;
 extern HWND statusBall;
+extern HWND infoGUI;
+extern HWND statusFPS2;
 
 void sendString(HANDLE hComm, char* outputBuffer);
 int receiveString(HANDLE hComm, char* outputBuffer, DWORD bytesRead);
@@ -83,7 +90,7 @@ void handleMainBoardCommunication();
 float time(LARGE_INTEGER start, LARGE_INTEGER stop);
 
 enum State { driveToNearestBall, lookForBall, scanForNearBall, lookForNearBallIgnoreStraight, turnToNearestBall, lookForGoal, driveToBall, kickBall, rotate180,
-			 nextTurnLeft, nextTurnRight} state, state2;
+			 nextTurnLeft, nextTurnRight, goalOnLeft, goalOnRight} state, state2, stateGoal;
 
 bool attackBlue;
 
@@ -111,12 +118,25 @@ int main() {
 void test() {
 	initCOMPort();
 	initUSBRadio();
-	sendString(hCOMDongle, "9:fs0\n");
-	QueryPerformanceFrequency(&timerFrequency);
+	//sendString(hCOMDongle, "9:fs0\n");
+	QueryPerformanceFrequency(&timerFrequency); //used for calculating the time by the counter values
+	QueryPerformanceCounter(&lastSpeedSent);
 	HANDLE waitHandles[3] = { osStatus.hEvent, startSignal, osStatusDongle.hEvent };
 	while (true) {
+		float floorX, floorY;
+		int currentx, currenty;
+		findNearestFloorBall(floorX, floorY, currentx, currenty);
+		float angle = atanf(floorY / floorX) * 180.0 / PI;
+
+		wchar_t buffer[64] = {};
+		swprintf_s(buffer, L"NX %.2f \n NY %.2f\n ang %.2f", floorX, floorY, angle);
+		SetWindowText(infoGUI, buffer);
+
 		if (hCOMDongle != INVALID_HANDLE_VALUE) {
-			setSpeedBoth(currentDrivingState);
+			QueryPerformanceCounter(&stopCounter);
+			if (time(lastSpeedSent, stopCounter) > 0.5) { //if we send the speeds too often we get communication timeouts
+				setSpeedBoth(currentDrivingState);
+			}
 		}
 		switch (WaitForMultipleObjects(3, waitHandles, FALSE, 1000)) {
 		case WAIT_OBJECT_0:
@@ -142,15 +162,17 @@ void test() {
 
 void testSingleBallTrack() {
 	HANDLE waitHandles[5] = { osStatus.hEvent, stopSignal, osStatusDongle.hEvent, calibratingSignal, newImageAnalyzed };
-	int currentx = 320, currenty = 0;
+	int currentx = 320, currenty = 0, FPS2Count = 0;
 	int timeOut = 50;
 	float movingTime; //timeout after sending each command
-	objectCollection goals;
+	objectCollection goals, goals2;
 	float nearestBallFloorX = 0, nearestBallFloorY = 0;
 	ignoreX = 0, ignoreY = 0;
 	LARGE_INTEGER ignoreStart = {}, ignoreStop = {}, kickingStart = {}, kickingStop = {};
 
 	state = driveToNearestBall;
+	stateGoal = goalOnRight;
+	SetWindowText(goalGuessState, L"Goal on right");
 	isBallInDribbler = false;
 	prints(L"Started, going to the nearest ball\n");
 	SetWindowText(stateStatusGUI, L"Started to nearest");
@@ -195,6 +217,17 @@ void testSingleBallTrack() {
 			//WaitForSingleObject(calibratingEndSignal, INFINITE);
 			continue;
 		case WAIT_OBJECT_0 + 4: //new image analyzed
+			//update FPS rate after every 5 images
+			++FPS2Count;
+			if (FPS2Count % 5 == 0) {
+				wchar_t data[32] = {};
+				QueryPerformanceCounter(&stopFPS2Counter);
+				float FPS = 5.0 / time(startFPS2Counter, stopFPS2Counter);
+				swprintf_s(data, L"FPS2: %.2f", FPS);
+				SetWindowText(statusFPS2, data);
+				startFPS2Counter.QuadPart = stopFPS2Counter.QuadPart;
+			}
+
 			if (calibrating) {
 				setSpeedBoth(currentDrivingState);
 			}
@@ -205,18 +238,56 @@ void testSingleBallTrack() {
 
 		if (attackBlue) { //set the side
 			goals = goalsBlueShare;
+			goals2 = goalsYellowShare;
 		}
 		else {
 			goals = goalsYellowShare;
+			goals2 = goalsBlueShare;
 		}
 
-		if (ignoreBall) {
+		if (ignoreBall) { //ignore the ball just kicked for 1s
 			QueryPerformanceCounter(&ignoreStop);
 			if (time(ignoreStart, ignoreStop) > 1.0) {
 				ignoreBall = false;
+				ignoreX = 0, ignoreY = 0;
 			}
 			else {
-				findNearestFloorObjectToOldObject(ignoreX, ignoreY, ballsShare);
+				float ignoreXNew = 0, ignoreYNew = 0;
+				findNearestFloorObjectToOldObject(ignoreXNew, ignoreYNew, ballsShare);
+				//if we cant see the ball behind the dribbler, don't start ignoring a ball too far away
+				if ((ignoreXNew - ignoreX)*(ignoreXNew - ignoreX) + (ignoreYNew - ignoreY)*(ignoreYNew - ignoreY) < 0.7) { 
+					ignoreX = ignoreXNew;
+					ignoreY = ignoreYNew;
+				}
+				wchar_t buffer[64] = {};
+				swprintf_s(buffer, L"IgX %.2f IgY %.2f\n NX %.2f NY %.2f", ignoreX, ignoreY, ignoreXNew, ignoreYNew);
+				SetWindowText(infoGUI, buffer);
+			}
+		}
+		else {
+			SetWindowText(infoGUI, L"Ignore OFF");
+		}
+
+		//keep track of the likely direction to turn to to find the goal
+		if ((goalsBlueShare.count > 0 || goalsYellowShare.count > 0) && !(goalsBlueShare.count == 1 && goalsYellowShare.count == 1)) {
+			int goalX, goalY;
+			State stateGoalNew;
+			if (goals.count > 0) {
+				findLargestObject(goalX, goalY, goals);
+				stateGoalNew = goalX > 320 ? goalOnRight : goalOnLeft;
+			}
+			else if (goals2.count > 0) {
+				findLargestObject(goalX, goalY, goals2);
+				stateGoalNew = goalX > 320 ? goalOnLeft : goalOnRight;
+			}
+			if (stateGoalNew != stateGoal) {
+				stateGoal = stateGoalNew;
+				if (stateGoal == goalOnRight) {
+					SetWindowText(goalGuessState, L"Goal on the right");
+				}
+				else {
+					SetWindowText(goalGuessState, L"Goal on the left");
+				}
 			}
 		}
 		
@@ -226,7 +297,7 @@ void testSingleBallTrack() {
 			}
 			else {
 				//drive to the nearest ball in the beginning
-				SetWindowText(stateStatusGUI, L"Started to nearest");
+				SetWindowText(stateStatusGUI, L"Driving to nearest");
 				nearestBallFloorX = 0;
 				if (ballsShare.count == 0) {
 					state = lookForBall;
@@ -248,22 +319,22 @@ void testSingleBallTrack() {
 				SetWindowText(stateStatusGUI, L"Looking for ball");
 				nearestBallFloorX = 0;
 				if (ballsShare.count == 0) {
-					rotateAroundCenter(-90);
+					rotateAroundCenter(-120);
 				}
 				else {
 					findNearestFloorBall(nearestBallFloorX, nearestBallFloorY, currentx, currenty);
-					if (nearestBallFloorX*nearestBallFloorX + nearestBallFloorY*nearestBallFloorY < 3.0 && nearestBallFloorX != 0) { //if closer than 1 meter
+					if (nearestBallFloorX != 0 && nearestBallFloorX*nearestBallFloorX + nearestBallFloorY*nearestBallFloorY < 3.0) { //if closer than 1 meter
 						state = driveToBall;
 						//prints(L"Nearest ball floorX: %.2f, floorY: %.2f, currentx: %d, currenty: %d\n", nearestBallFloorX, nearestBallFloorY, currentx, currenty);
 						prints(L"Driving to ball\n");
 					}
 					else {
-						rotateAroundCenter(-70);
+						rotateAroundCenter(-120);
 						movingTime = 6;
 						QueryPerformanceCounter(&startCounter);
 						nearestBallFloorX = 0, nearestBallFloorY = 0; //initialize the values so that new nearest can be found the next time
 						state = scanForNearBall;
-						prints(L"Looking for a near ball\n");
+						prints(L"Scanning for a near ball\n");
 					}
 				}
 			}
@@ -274,7 +345,7 @@ void testSingleBallTrack() {
 				state = lookForGoal;
 			}
 			else {
-				SetWindowText(stateStatusGUI, L"Looking for a near ball");
+				SetWindowText(stateStatusGUI, L"Scanning for a near ball");
 				QueryPerformanceCounter(&stopCounter);
 				for (int i = 0; i < ballsShare.count; ++i) {
 					float floorX, floorY;
@@ -304,10 +375,12 @@ void testSingleBallTrack() {
 					}
 					prints(L"Turning back to nearest ball\n");
 				}
-				rotateAroundCenter(-70);
+				else {
+					rotateAroundCenter(-70);
+				}
 			}
 		}
-		if (state == turnToNearestBall) { //we didn't find a ball closer than 1m, turn to the nearest one we found
+		if (state == turnToNearestBall) { //turn to the nearest ball found during scanning
 			if (isBallInDribbler) {
 				state = lookForGoal;
 			}
@@ -389,14 +462,28 @@ void testSingleBallTrack() {
 				convertToFloorCoordinates(x, y, floorX, floorY);
 				//prints(L"Goal x: %d\n", x);
 				if (!(goalsBlueShare.count == 1 && goalsYellowShare.count == 1) &&
-					(y > 0 && floorX > 0 && fabs(floorY) < 18.0 / 100.0 || abs(x-320) <= 50)) {
+					(y > 0 && floorX > 0 && fabs(floorY) < 18.0 / 100.0 || abs(x-320) <= 35)) {
 					state = kickBall;
+					//charge();
+					rotateAroundFront(0);
 					QueryPerformanceCounter(&kickingStart);
 					prints(L"Kicking\n");
 				}
 				else {
-					int sign = x > 320 ? -1 : 1;
-					rotateAroundFront(sign * (60.0 * pow(fabs(tanhf((x - 320) / 130.0)),2) + 20));
+					int sign;
+					if (stateGoal == goalOnRight) {
+						sign = -1;
+					}
+					else {
+						sign = 1;
+					}
+					//around 120 degs/s is max speed so that the goal doesn't go out, less than 30 degs/s is pointless
+					float angle = atanf(tanf(angleOfView)*(x - 320.0) / 320.0); //roughly, in degrees
+					float speedMultiplier = 1 - expf( - fabs(pow((x - 320.0) / 320.0, 4)) );
+					speedMultiplier = speedMultiplier > 1 ? 1 : speedMultiplier;
+					float turningSpeed = 25 + (140 - 25)*speedMultiplier;
+
+					rotateAroundFront(sign * turningSpeed);
 				}
 			}
 			else {
@@ -410,25 +497,28 @@ void testSingleBallTrack() {
 				state = lookForBall;
 			}
 			if (!charged) {//not charged, wait more
-				//QueryPerformanceCounter(&kickingStop);
-				//if (time(kickingStart, kickingStop) > 1.5) {
-				//	kick();
-				//	charge();
-				//}
+				QueryPerformanceCounter(&kickingStop);
+				if (time(kickingStart, kickingStop) > 4.0) {
+					QueryPerformanceCounter(&kickingStart);
+					charge();
+				}
 				continue;
 			}
 			kick();
+			Sleep(10);
 			prints(L"KICKED\n");
-			charge();
 
 			isBallInDribbler = false;
 			sendString(hCOMDongle, "9:bl\n");
 
-			ignoreX = 15.0 / 100.0, ignoreY = 0;
+			ignoreBall = true;
+			ignoreX = 20.0 / 100.0, ignoreY = 0;
 			QueryPerformanceCounter(&ignoreStart);
 
 			state = lookForBall;
 			prints(L"Looking for ball\n");
+
+			charge();
 		}
 
 		//if (state == driveToGoal) { //before we had the coilgun
@@ -458,18 +548,18 @@ void testSingleBallTrack() {
 		//		state = lookForBall;
 		//	}
 		//}
-		if (state == rotate180) {
-			//prints(L"Rotating 180\n");
-			SetWindowText(stateStatusGUI, L"rotating 180");
-			timeOut = 0;
-			QueryPerformanceCounter(&stopCounter);
-			if ((double)(stopCounter.QuadPart - startCounter.QuadPart)/((double)timerFrequency.QuadPart) > movingTime) {
-				timeOut = 50;
-				prints(L"turned around\n");
-				state = lookForBall;
-				prints(L"Looking for ball\n");
-			}
-		}
+		//if (state == rotate180) {
+		//	//prints(L"Rotating 180\n");
+		//	SetWindowText(stateStatusGUI, L"rotating 180");
+		//	timeOut = 0;
+		//	QueryPerformanceCounter(&stopCounter);
+		//	if ((double)(stopCounter.QuadPart - startCounter.QuadPart)/((double)timerFrequency.QuadPart) > movingTime) {
+		//		timeOut = 50;
+		//		prints(L"turned around\n");
+		//		state = lookForBall;
+		//		prints(L"Looking for ball\n");
+		//	}
+		//}
 	}
 }
 
@@ -506,40 +596,40 @@ bool isLineInFront() {
 //	return FALSE;
 //}
 
-bool checkIsBallInDribbler() {
-	sendString(hCOMDongle, "9:bl\n");
-	char buffer[32] = {};
-	DWORD bytesRead = 0;
-	receiveString(hCOMDongle, buffer, bytesRead);
-	if (lstrcmpA(buffer, "<9:bl:1>\n") == 0) {
-		return TRUE;
-	}
-	else {
-		return FALSE;
-	}
-	//return FALSE;
-	//sendString(hCOMDongle, "9:bl\n");
-	//char buffer[32] = {};
-	//DWORD bytesRead;
-	//receiveString(hCOMDongle, buffer, bytesRead);
-	//if (lstrcmpA(buffer, "9:bl1")) {
-	//	return TRUE;
-	//}
-	//else {
-	//	return FALSE;
-	//}
-	//float floorX, floorY;
-
-	//if (ballsShare.count > 0) {
-	//	for (int i = 0; i < ballsShare.count; ++i) {
-	//		convertToFloorCoordinates(ballsShare.data[i].x, ballsShare.data[i].y, floorX, floorY);
-	//		if (floorX < 21.0 / 100.0 && fabs(floorY) < 8.0 / 100.0) {
-	//			return TRUE;
-	//		}
-	//	}
-	//}
-	//return FALSE;
-}
+//bool checkIsBallInDribbler() { //not used
+//	sendString(hCOMDongle, "9:bl\n");
+//	char buffer[32] = {};
+//	DWORD bytesRead = 0;
+//	receiveString(hCOMDongle, buffer, bytesRead);
+//	if (lstrcmpA(buffer, "<9:bl:1>\n") == 0) {
+//		return TRUE;
+//	}
+//	else {
+//		return FALSE;
+//	}
+//	//return FALSE;
+//	//sendString(hCOMDongle, "9:bl\n");
+//	//char buffer[32] = {};
+//	//DWORD bytesRead;
+//	//receiveString(hCOMDongle, buffer, bytesRead);
+//	//if (lstrcmpA(buffer, "9:bl1")) {
+//	//	return TRUE;
+//	//}
+//	//else {
+//	//	return FALSE;
+//	//}
+//	//float floorX, floorY;
+//
+//	//if (ballsShare.count > 0) {
+//	//	for (int i = 0; i < ballsShare.count; ++i) {
+//	//		convertToFloorCoordinates(ballsShare.data[i].x, ballsShare.data[i].y, floorX, floorY);
+//	//		if (floorX < 21.0 / 100.0 && fabs(floorY) < 8.0 / 100.0) {
+//	//			return TRUE;
+//	//		}
+//	//	}
+//	//}
+//	//return FALSE;
+//}
 
 void kick(int microSeconds) { //kick for a certain amount of microseconds
 	char buffer[16] = {};
@@ -576,25 +666,32 @@ void rotateAroundFrontAndMoveForward(float angularVelocity, float speedForward) 
 }
 
 void rotateAroundFront(float angularVelocity) {
-	currentDrivingState.speed = -angularVelocity * PI / 180 * baseRadius;
-	currentDrivingState.angle = 90, currentDrivingState.angularVelocity = angularVelocity;
-	setSpeedAngle(currentDrivingState);
+	float speed = -angularVelocity * PI / 180 * baseRadius;
+	if (currentDrivingState.speed != speed || currentDrivingState.angle != 90 || currentDrivingState.angularVelocity != angularVelocity ||
+		currentDrivingState.vx != 0 || currentDrivingState.vy != 0) {
+		currentDrivingState.speed = -angularVelocity * PI / 180 * baseRadius;
+		currentDrivingState.angle = 90, currentDrivingState.angularVelocity = angularVelocity;
+		setSpeedAngle(currentDrivingState);
+	}
 }
 
 //start driving to the position with coordinates in the floor system, try to rotate by an angle before arriving
-void driveToFloorXY(float floorX, float floorY, float angle) {
+void driveToFloorXY(float floorX, float floorY, float angle) { //0.6 m/s is around the speed at which we can still catch the ball, speed should go low starting at around 0.8m
+	//around 0.2m is the distance when the ball is very near the dribbler
 	floorX = floorX < 1 / 100 ? 1 / 100 : floorX;
 	floorY = fabs(floorY) < 1 / 300 ? 0.0 : floorY;
 	float dist = powf(floorX*floorX + floorY*floorY, 0.5); //distance to the ball
-	float speedMultiplier = pow(fabs(tanhf(dist/0.4)),1); //use square root of the distance for modulating speed
-	float speedBase = 0.8; //max speed
-	float speed = speedBase*speedMultiplier;
+	float speedMultiplier = 1 - expf(-fabs(pow((dist-0.2) / 1.0, 6))); //pow(fabs(tanhf((dist - 0.2) / 1.0)) / tanhf(1), 2); //use square root of the distance for modulating speed
+	speedMultiplier = speedMultiplier > 1 ? 1 : speedMultiplier;
+	float speedBase = 1.5; //max speed
+	float speed = 0.5 + (speedBase - 0.5) * speedMultiplier;
 	float time = dist / speed; //time to reach the ball
 	float angleToBall = atanf(floorY / floorX)/PI*180.0;
-	currentDrivingState.angularVelocity = 1.5 * angleToBall / time; //turn fast engouh so that we have turned by the angle to the ball by half the distance
+
+	currentDrivingState.angularVelocity = 2.0 * angleToBall / time; //turn fast engouh so that we have turned by the angle to the ball by half the distance
 	//prints(L"Angle to ball: %.2f, angular velocity: %.2f, dist: %.2f, floorX: %.2f, floorY: %.2f\n", angleToBall, currentDrivingState.angularVelocity, dist, floorX, floorY);
 	currentDrivingState.speed = speed;
-	currentDrivingState.angle = angleToBall;
+	currentDrivingState.angle = angle / 2.0;
 	setSpeedAngle(currentDrivingState);
 }
 
@@ -616,8 +713,11 @@ void convertToFloorCoordinates(int currentx, int currenty, float& floorX, float&
 
 //rotates around the center with the given angular velocity in degs/s
 void rotateAroundCenter(float angularVelocity) {
-	currentDrivingState.angle = 0, currentDrivingState.speed = 0, currentDrivingState.angularVelocity = angularVelocity;
-	setSpeedAngle(currentDrivingState);
+	if (currentDrivingState.angle != 0 || currentDrivingState.speed != 0 || currentDrivingState.angularVelocity != angularVelocity ||
+		currentDrivingState.vx != 0 || currentDrivingState.vy != 0) {
+		currentDrivingState.angle = 0, currentDrivingState.speed = 0, currentDrivingState.angularVelocity = angularVelocity;
+		setSpeedAngle(currentDrivingState);
+	}
 }
 
 //finds an object nearest to the old image x, y values
@@ -928,6 +1028,10 @@ int receiveString(HANDLE hComm, char* outputBuffer, DWORD bytesRead) {
 
 //sets the speed of a specific wheel to a value in the plate speed units
 void setEngineRotation(int id, int speed) {
+	if (speed > 190) {
+		prints(L"Wheel speed overflow.");
+		speed = 190;
+	}
 	char writeBuffer[32] = {};
 	DWORD bytesWritten;
 	int len = sprintf_s(writeBuffer, "%d:sd%d\n", id, speed);
@@ -945,6 +1049,7 @@ void setSpeedAngle(float speed, float angle, float angularVelocity) {
 }
 
 void setSpeedAngle(drivingState state) {
+	state.vx = 0, state.vy = 0;
 	setSpeedAngle(state.speed, state.angle, state.angularVelocity);
 }
 
@@ -964,8 +1069,6 @@ void setSpeedXY(float vx, float vy, float angularVelocity) {
 	int wheel2Speed = (int)(((vx + vy) / (wheelRadius * SQRT2 * 2 * PI) + angularVelocity / 360 * baseRadius / wheelRadius)*realToPlateUnits);
 	int wheel3Speed = (int)(((vx + vy) / (wheelRadius * SQRT2 * 2 * PI) - angularVelocity / 360 * baseRadius / wheelRadius)*realToPlateUnits);
 	int wheel4Speed = (int)(((vx - vy) / (wheelRadius * SQRT2 * 2 * PI) + angularVelocity / 360 * baseRadius / wheelRadius)*realToPlateUnits);
-	if (wheel1Speed > 190 || wheel2Speed > 190 || wheel3Speed > 190 || wheel4Speed > 190)
-		prints(L"Wheel speed overflow.");
 
 	setEngineRotation(1, wheel1Speed);
 	setEngineRotation(2, wheel2Speed);
@@ -974,6 +1077,7 @@ void setSpeedXY(float vx, float vy, float angularVelocity) {
 }
 
 void setSpeedXY(drivingState state) {
+	state.angle = 0, state.speed = 0;
 	setSpeedXY(state.vx, state.vy, state.angularVelocity);
 }
 

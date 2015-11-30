@@ -105,8 +105,11 @@ HWND maxRadioButton;
 HWND radioCheckBox;
 HWND hwndEditID = NULL;
 HWND stateStatusGUI;
+HWND goalGuessState;
 HWND statusFPS;
+HWND statusFPS2;
 HWND statusBall;
+HWND infoGUI;
 HWND goalSelectCheckBox;
 HWND hwndDrivingSpeed;
 HWND hwndAngularVelocity;
@@ -138,7 +141,7 @@ enum {
 	ID_BALLS_PIXELCOUNT, ID_GOALSBLUE_PIXELCOUNT, ID_CHECKBOX_EXCLUDE,
 	ID_GOALSYELLOW_PIXELCOUNT, ID_LINES_PIXELCOUNT, ID_STATUS_TEXT, ID_BUTTON_CHARGE, ID_BUTTON_KICK, ID_BUTTON_DISCHARGE,
 	ID_BUTTON_DRIBBLER_ON, ID_BUTTON_DRIBBLER_OFF, ID_STATUS_FPS, ID_STATUS_BALL, ID_GOAL_SELECTION, ID_SET_SPEED,
-	ID_SET_ANGULAR_VELOCITY
+	ID_SET_ANGULAR_VELOCITY, ID_INFO
 };
 
 objectCollection balls, goalsBlue, goalsYellow, ballsShare, goalsBlueShare, goalsYellowShare; //local data structure for holding objects and shared structures
@@ -481,7 +484,7 @@ bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer) {
 	while (TRUE) {
 		int lineXint = lineX;
 		int lineYint = lineY;
-		if (lineYint >= 100 && lineYint < 480) { //start at 100 because the robot is quite light itself, after y > 100 should be lines only
+		if (lineYint >= 142 && lineYint < 480) { //start at 142 because the robot is quite light itself, after y > 100 should be lines only
 			for (int X2 = lineXint - 1; X2 <= lineXint + 1; ++X2) { //check 3 pixels on the line
 				if (X2 >= 0 && X2 < 640) {
 					//wprintf(L"lineXint: %d, lineYint: %d\n", X2, lineYint);
@@ -875,28 +878,35 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 640 + 640, 140, 100, 20, hwnd, (HMENU)ID_BUTTON_DRIBBLER_OFF, hInstance, NULL);
 
 		stateStatusGUI = CreateWindowExW(0, L"STATIC", L"stopped",
-			WS_VISIBLE | WS_CHILD | SS_LEFT, 640 + 640+5, 180, 110, 20, hwnd, (HMENU)ID_STATUS_TEXT, hInstance, NULL);
-		statusFPS = CreateWindowExW(0, L"STATIC", L"0.00",
-			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 200, 110, 20, hwnd, (HMENU)ID_STATUS_FPS, hInstance, NULL);
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 180, 110, 60, hwnd, (HMENU)ID_STATUS_TEXT, hInstance, NULL);
+		statusFPS = CreateWindowExW(0, L"STATIC", L"FPS: 0.00",
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 240, 110, 20, hwnd, (HMENU)ID_STATUS_FPS, hInstance, NULL);
+		statusFPS2 = CreateWindowExW(0, L"STATIC", L"FPS2: 0.00",
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 260, 110, 20, hwnd, (HMENU)ID_STATUS_FPS, hInstance, NULL);
 		statusBall = CreateWindowExW(0, L"STATIC", L"Ball 0",
-			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 220, 110, 20, hwnd, (HMENU)ID_STATUS_BALL, hInstance, NULL);
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 280, 110, 20, hwnd, (HMENU)ID_STATUS_BALL, hInstance, NULL);
+		goalGuessState = CreateWindowExW(0, L"STATIC", L"Goal direction",
+			WS_VISIBLE | WS_CHILD | SS_CENTER , 640 + 640, 300, 110, 20, hwnd, (HMENU)ID_STATUS_BALL, hInstance, NULL);
 
 		CreateWindowExW(0, L"STATIC", L"Driving speed",
-			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 260, 110, 20, hwnd, (HMENU)ID_STATUS_TEXT, hInstance, NULL);
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 320, 110, 20, hwnd, (HMENU)ID_STATUS_TEXT, hInstance, NULL);
 		wchar_t tempBuffer[32] = {};
 		hwndDrivingSpeed = CreateWindowExW(
 			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | ES_CENTER,
-			640 + 640+10, 280, 90, 20, hwnd, (HMENU)ID_SET_SPEED, hInstance, NULL);
+			640 + 640+10, 340, 90, 20, hwnd, (HMENU)ID_SET_SPEED, hInstance, NULL);
 		swprintf_s(tempBuffer, L"%.2f", keyboardSpeed);
 		SetWindowTextW(hwndDrivingSpeed, tempBuffer);
 
 		CreateWindowExW(0, L"STATIC", L"Angular velocity",
-			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 305, 110, 20, hwnd, (HMENU)ID_STATUS_TEXT, hInstance, NULL);
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 365, 110, 20, hwnd, (HMENU)ID_STATUS_TEXT, hInstance, NULL);
 		hwndAngularVelocity = CreateWindowExW(
 			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | ES_CENTER,
-			640 + 640+10, 325, 90, 20, hwnd, (HMENU)ID_SET_ANGULAR_VELOCITY, hInstance, NULL);
+			640 + 640+10, 385, 90, 20, hwnd, (HMENU)ID_SET_ANGULAR_VELOCITY, hInstance, NULL);
 		swprintf_s(tempBuffer, L"%.0f", keyboardAngularVelocity);
 		SetWindowTextW(hwndAngularVelocity, tempBuffer);
+
+		infoGUI = CreateWindowExW(0, L"STATIC", L"DEBUG\n INFO",
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 420, 110, 100, hwnd, (HMENU)ID_INFO, hInstance, NULL);;
 
 		//set the proper window position
 		RECT rc;

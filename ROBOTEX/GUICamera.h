@@ -5,6 +5,7 @@ DWORD WINAPI GUICamera(LPVOID lpParameter);
 void prints(wchar_t* text, ...);
 void setSpeedAngle(float speed, float angle, float angularVelocity); //from the main program
 
+//max wheel speed is around 2.176 m/s, max rot speed of the robot is around 890 degrees/s
 #define wheelRadius (3.5 / 100.0) //in meters
 #define baseRadius (14.0 / 100.0) //base radius in meters from the center to the wheel
 #define cameraHeight (17.0 / 100.0) //height in meters of the camera
