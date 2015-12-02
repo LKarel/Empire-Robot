@@ -50,10 +50,11 @@ void charge();
 void discharge();
 void kick(int microSeconds);
 void kick();
-//void dribblerON();
-//void dribblerOFF();
+void dribblerON();
+void dribblerOFF();
 bool checkRoundness(objectCollection& balls, int i, DWORD* analyzeBuffer, int objectID);
-bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer, int checkNumber, int startY);
+bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer);
+bool isLineBetweenRobotAndBall2(int ballX, int ballY, BYTE* pBuffer);
 
 //variables specific to the way the camera is set up, it's what Windows DirectShow uses
 IMediaControl *pControl = NULL;
@@ -145,7 +146,7 @@ enum {
 	ID_SET_ANGULAR_VELOCITY, ID_INFO, ID_INFO2
 };
 
-objectCollection balls, goalsBlue, goalsYellow, ballsShare, goalsBlueShare, goalsYellowShare; //local data structure for holding objects and shared structures
+objectCollection balls, goalsBlue, goalsYellow, ballsShare, goalsBlueShare, goalsYellowShare, linesBlack, linesWhite; //local data structure for holding objects and shared structures
 lineCollection lines, linesShare; //data for the lines
 int fieldGreenPixelCount, fieldGreenPixelCountShare;
 
@@ -288,7 +289,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 			else if (COLORSFIT(goalYellowColors, hue, saturation, value)) {
 				analyzePixelSurroundings(goalsYellow, goalYellowColors, 2, pixBuffer, pBufferCopy, x, y);
 			}
-			else if (COLORSFIT(fieldGreenColors, hue, saturation, value)) {
+			if (COLORSFIT(fieldGreenColors, hue, saturation, value)) {
 				fieldGreenPixelCount++;
 			}
 		}
@@ -301,11 +302,12 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 	ballCount = 0;
 	//printf("balls count before: %d\n", balls.count);
 	for (int i = 0; i <= balls.count; ++i) {
-		if (balls.data[i].pixelcount >= ballsPixelCount) { // && checkRoundness(balls, i, pBufferCopy, 0)
+		if (balls.data[i].pixelcount >= ballsPixelCount && checkRoundness(balls, i, pBufferCopy, 0)) { // && checkRoundness(balls, i, pBufferCopy, 0)
 			balls.data[ballCount] = balls.data[i];
 			balls.data[ballCount].x /= balls.data[ballCount].pixelcount;
 			balls.data[ballCount].y /= balls.data[ballCount].pixelcount;
-			balls.data[ballCount].isObjectAcrossLine = isLineBetweenRobotAndBall(balls.data[ballCount].x, balls.data[ballCount].y, pBuffer, 0, 0);
+			//start at 142 because the robot is quite light itself, after that should be lines only
+			balls.data[ballCount].isObjectAcrossLine = isLineBetweenRobotAndBall2(balls.data[ballCount].x, balls.data[ballCount].y, pBuffer);
 			//printf("x %d y %d pix %d\n", balls.data[ballCount].x, 
 			//	balls.data[ballCount].y, balls.data[ballCount].pixelcount);
 			++ballCount;
@@ -442,7 +444,8 @@ void reverse(BYTE* buffer) {
 
 //check if there are enough pixels in a square with side twice the radius of the ball based on the pixelcount
 bool checkRoundness(objectCollection& balls, int i, DWORD* analyzeBuffer, int objectID) {
-	int size = int(pow(balls.data[i].pixelcount/PI, 0.5));
+	int size = int(pow(balls.data[i].pixelcount/PI, 0.5))*1.5;
+	size = size > 5 ? size : 5;
 	int counter = 0;
 	int posx = balls.data[i].x / balls.data[i].pixelcount;
 	int posy = balls.data[i].y / balls.data[i].pixelcount;
@@ -464,7 +467,129 @@ bool checkRoundness(objectCollection& balls, int i, DWORD* analyzeBuffer, int ob
 	}
 }
 
-bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer, int checkNumber, int startY) {
+//considers as elements of one line if there isn't a larger than 10px gap of incorrect colors for the line
+//then uses these line elements to determine if there is a black line after a white one and they are close enough
+bool isLineBetweenRobotAndBall2(int ballX, int ballY, BYTE* pBuffer) {
+	ZeroMemory(linesBlack.data, linesBlack.size * sizeof(objectInfo));
+	ZeroMemory(linesWhite.data, linesWhite.size * sizeof(objectInfo));
+	int x = 320; //in camera x,y coordinates 
+	int y = 240 - 1 / tanf(cameraAngle) / (tanf(angleOfView / 2) / 320);
+	int avgXWhite = 0, avgYWhite = 0, avgXBlack = 0, avgYBlack = 0, blackPixelCount = 0, whitePixelCount = 0;
+	DWORD* pixBuffer = (DWORD*)pBuffer;
+
+	if (ballX == x && ballY == y) {
+		return FALSE;
+	}
+
+	float lineY = y; //start coordinates
+	float lineX = x;
+	float slope;
+	int step;
+	int whiteLineCount = 0, blackLineCount = 0;
+	int whiteMissed = 0, blackMissed = 0;
+
+	if (abs(ballX - x) >= abs(ballY - y)) { //move along the x or y direction based depending on the angle of the line
+		step = ballX > x ? 1 : -1;
+		slope = (float)(ballY - y) / (ballX - x);
+	}
+	else {
+		step = ballY > y ? 1 : -1;
+		slope = (float)(ballX - x) / (ballY - y);
+	}
+
+	while (TRUE) { //make a list of all the lines
+		int lineXint = lineX;
+		int lineYint = lineY;
+
+		if (lineYint >= 142 && lineYint < 480) {
+			bool atLeastOneBlack = false, atLeastOneWhite = false;
+			for (int X2 = lineXint - 1; X2 <= lineXint + 1; ++X2) { //check 3 pixels on the line
+				if (X2 >= 0 && X2 < 640) {
+					//wprintf(L"lineXint: %d, lineYint: %d\n", X2, lineYint);
+					int blue = (pixBuffer[X2 + lineYint * 640]) & 0xFF, green = (pixBuffer[X2 + lineYint * 640] >> 8) & 0xFF,
+						red = (pixBuffer[X2 + lineYint * 640] >> 16) & 0xFF;
+					float hue = HUE(red, green, blue);
+					float saturation = SATURATION(red, green, blue);
+					float value = VALUE(red, green, blue);
+
+					if (COLORSFIT(lineBlackColors, hue, saturation, value)) {
+						linesBlack.data[blackLineCount].x += X2;
+						linesBlack.data[blackLineCount].y += lineYint;
+						linesBlack.data[blackLineCount].pixelcount += 1;
+						atLeastOneBlack = true;
+						blackMissed = 0;
+					}
+					if (COLORSFIT(lineWhiteColors, hue, saturation, value)) {
+						linesWhite.data[whiteLineCount].x += X2;
+						linesWhite.data[whiteLineCount].y += lineYint;
+						linesWhite.data[whiteLineCount].pixelcount += 1;
+						atLeastOneWhite = true;
+						whiteMissed = 0;
+					}
+				}
+			}
+			if (!atLeastOneBlack) {
+				blackMissed++;
+			}
+			if (!atLeastOneWhite) {
+				whiteMissed++;
+			}
+			if (blackMissed == 10 && linesBlack.data[blackLineCount].pixelcount) {
+				blackLineCount++;
+				if (blackLineCount == linesBlack.size) {
+					doubleObjectBufferSize(&linesBlack);
+				}
+			}
+			if (whiteMissed == 10 && linesWhite.data[whiteLineCount].pixelcount) {
+				whiteLineCount++;
+				if (whiteLineCount == linesWhite.size) {
+					doubleObjectBufferSize(&linesWhite);
+				}
+			}
+		}
+
+		if (abs(ballX - x) >= abs(ballY - y)) {
+			lineX += step;
+			lineY += slope;
+		}
+		else {
+			lineX += slope;
+			lineY += step;
+		}
+		if (lineYint == ballY) {
+			break;
+		}
+	}
+
+	for (int b = 0; b <= blackLineCount; ++b) {
+		if (linesBlack.data[b].pixelcount > 0) {
+			linesBlack.data[b].x /= linesBlack.data[b].pixelcount;
+			linesBlack.data[b].y /= linesBlack.data[b].pixelcount;
+		}
+	}
+
+	for (int w = 0; w <= whiteLineCount; ++w) {
+		if (linesWhite.data[w].pixelcount > 0) {
+			linesWhite.data[w].x /= linesWhite.data[w].pixelcount;
+			linesWhite.data[w].y /= linesWhite.data[w].pixelcount;
+		}
+	}
+
+	for (int b = 0; b <= blackLineCount; ++b) {
+		if (linesBlack.data[b].pixelcount > 25) {
+			for (int w = 0; w <= whiteLineCount; ++w) {
+				if (linesBlack.data[b].y > linesWhite.data[w].y && linesBlack.data[b].y - linesWhite.data[w].y < 70
+					&& linesWhite.data[w].pixelcount > 25) {
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
+}
+
+bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer) {
 	int x = 320; //in camera x,y coordinates 
 	int y = 240 - 1 / tanf(cameraAngle) / (tanf(angleOfView / 2) / 320);
 	int avgXWhite = 0, avgYWhite = 0, avgXBlack = 0, avgYBlack = 0, blackPixelCount = 0, whitePixelCount = 0;
@@ -492,7 +617,7 @@ bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer, int checkNum
 	while (TRUE) {
 		int lineXint = lineX;
 		int lineYint = lineY;
-		if (lineYint >= 142 && lineYint < 480) { //start at 142 because the robot is quite light itself, after y > 100 should be lines only
+		if (lineYint >= 142 && lineYint < 480) {
 			for (int X2 = lineXint - 1; X2 <= lineXint + 1; ++X2) { //check 3 pixels on the line
 				if (X2 >= 0 && X2 < 640) {
 					//wprintf(L"lineXint: %d, lineYint: %d\n", X2, lineYint);
@@ -526,6 +651,7 @@ bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer, int checkNum
 			break;
 		}
 	}
+
 	//prints(L"ball %d %d line %.2f %.2f\n", ballX, ballY, lineX, lineY);
 	//prints(L"%d %d %d %d\n", avgXBlack, avgYBlack, avgXWhite, avgYWhite);
 	if (whitePixelCount >= 20 && blackPixelCount >= 20) {
@@ -650,7 +776,7 @@ public:
 			analyzeImage(Time, pBuffer, BufferLen);
 			for (int i = 0; i < balls.count; ++i) {
 				if (balls.data[i].isObjectAcrossLine) {
-					drawCross(balls.data[i].x, balls.data[i].y, 0xAD031A, g_pBuffer); //dark red
+					drawCross(balls.data[i].x, balls.data[i].y, 0x00, g_pBuffer); //black
 				}
 				else {
 					drawCross(balls.data[i].x, balls.data[i].y, 0xFF0000, g_pBuffer); //red
@@ -674,7 +800,7 @@ public:
 			//prints(L"analyzed %d\n", balls.count);
 			for (int i = 0; i < balls.count; ++i) {
 				if (balls.data[i].isObjectAcrossLine) {
-					drawCross(balls.data[i].x, balls.data[i].y, 0xAD031A, g_pBuffer); //dark red
+					drawCross(balls.data[i].x, balls.data[i].y, 0x00, g_pBuffer); //black
 				}
 				else {
 					drawCross(balls.data[i].x, balls.data[i].y, 0xFF0000, g_pBuffer); //red
@@ -765,6 +891,11 @@ DWORD WINAPI GUICamera(LPVOID lpParameter)
 	goalsYellowShare.size = 128, goalsYellowShare.count = 0;
 	linesShare.data = (lineInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(lineInfo) * 128);
 	linesShare.size = 128, linesShare.count = 0;
+	linesBlack.data = (objectInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(objectInfo) * 128);
+	linesBlack.size = 128;
+	linesWhite.data = (objectInfo*)HeapAlloc(GetProcessHeap(), NULL, sizeof(objectInfo) * 128);
+	linesWhite.size = 128;
+
 	pBufferCopy = (DWORD*)HeapAlloc(GetProcessHeap(), NULL, 640*480*4);
 	houghTransformBuffer = (DWORD*)HeapAlloc(GetProcessHeap(), NULL, 150 * 150 * 4);
 	activeColors = &ballColors;
@@ -1019,11 +1150,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 			SetFocus(hwndMain);
 			return 0;
 		case ID_BUTTON_DRIBBLER_ON:
-			//dribblerON();
+			dribblerON();
 			SetFocus(hwndMain);
 			return 0;
 		case ID_BUTTON_DRIBBLER_OFF:
-			//dribblerOFF();
+			dribblerOFF();
 			SetFocus(hwndMain);
 			return 0;
 		case ID_SET_SPEED:
