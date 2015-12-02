@@ -53,7 +53,7 @@ void kick();
 //void dribblerON();
 //void dribblerOFF();
 bool checkRoundness(objectCollection& balls, int i, DWORD* analyzeBuffer, int objectID);
-bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer);
+bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer, int checkNumber, int startY);
 
 //variables specific to the way the camera is set up, it's what Windows DirectShow uses
 IMediaControl *pControl = NULL;
@@ -110,6 +110,7 @@ HWND statusFPS;
 HWND statusFPS2;
 HWND statusBall;
 HWND infoGUI;
+HWND infoGUI2;
 HWND goalSelectCheckBox;
 HWND hwndDrivingSpeed;
 HWND hwndAngularVelocity;
@@ -141,7 +142,7 @@ enum {
 	ID_BALLS_PIXELCOUNT, ID_GOALSBLUE_PIXELCOUNT, ID_CHECKBOX_EXCLUDE,
 	ID_GOALSYELLOW_PIXELCOUNT, ID_LINES_PIXELCOUNT, ID_STATUS_TEXT, ID_BUTTON_CHARGE, ID_BUTTON_KICK, ID_BUTTON_DISCHARGE,
 	ID_BUTTON_DRIBBLER_ON, ID_BUTTON_DRIBBLER_OFF, ID_STATUS_FPS, ID_STATUS_BALL, ID_GOAL_SELECTION, ID_SET_SPEED,
-	ID_SET_ANGULAR_VELOCITY, ID_INFO
+	ID_SET_ANGULAR_VELOCITY, ID_INFO, ID_INFO2
 };
 
 objectCollection balls, goalsBlue, goalsYellow, ballsShare, goalsBlueShare, goalsYellowShare; //local data structure for holding objects and shared structures
@@ -304,7 +305,7 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 			balls.data[ballCount] = balls.data[i];
 			balls.data[ballCount].x /= balls.data[ballCount].pixelcount;
 			balls.data[ballCount].y /= balls.data[ballCount].pixelcount;
-			balls.data[ballCount].isObjectAcrossLine = isLineBetweenRobotAndBall(balls.data[ballCount].x, balls.data[ballCount].y, pBuffer);
+			balls.data[ballCount].isObjectAcrossLine = isLineBetweenRobotAndBall(balls.data[ballCount].x, balls.data[ballCount].y, pBuffer, 0, 0);
 			//printf("x %d y %d pix %d\n", balls.data[ballCount].x, 
 			//	balls.data[ballCount].y, balls.data[ballCount].pixelcount);
 			++ballCount;
@@ -315,26 +316,32 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 
 	goalCount = 0;
 	for (int i = 0; i <= goalsBlue.count; ++i) {
-		if (goalsBlue.data[i].pixelcount >= goalsBluePixelCount) {
-			goalsBlue.data[goalCount] = goalsBlue.data[i];
-			goalsBlue.data[goalCount].x /= goalsBlue.data[goalCount].pixelcount;
-			goalsBlue.data[goalCount].y /= goalsBlue.data[goalCount].pixelcount;
-			//printf("x %d y %d pix %d\n", balls.data[ballCount].x, 
-			//	balls.data[ballCount].y, balls.data[ballCount].pixelcount);
-			++goalCount;
+		if (goalsBlue.data[i].pixelcount > 0) {
+			int y = goalsBlue.data[i].y / goalsBlue.data[i].pixelcount;
+			if (goalsBlue.data[i].pixelcount >= goalsBluePixelCount + pow((480 - y) / 80.0, 2) * 2000) {
+				goalsBlue.data[goalCount] = goalsBlue.data[i];
+				goalsBlue.data[goalCount].x /= goalsBlue.data[goalCount].pixelcount;
+				goalsBlue.data[goalCount].y /= goalsBlue.data[goalCount].pixelcount;
+				//printf("x %d y %d pix %d\n", balls.data[ballCount].x, 
+				//	balls.data[ballCount].y, balls.data[ballCount].pixelcount);
+				++goalCount;
+			}
 		}
 	}
 	goalsBlue.count = goalCount;
 
 	goalCount = 0;
 	for (int i = 0; i <= goalsYellow.count; ++i) {
-		if (goalsYellow.data[i].pixelcount >= goalsYellowPixelCount) {
-			goalsYellow.data[goalCount] = goalsYellow.data[i];
-			goalsYellow.data[goalCount].x /= goalsYellow.data[goalCount].pixelcount;
-			goalsYellow.data[goalCount].y /= goalsYellow.data[goalCount].pixelcount;
-			//printf("x %d y %d pix %d\n", balls.data[ballCount].x, 
-			//	balls.data[ballCount].y, balls.data[ballCount].pixelcount);
-			++goalCount;
+		if (goalsYellow.data[i].pixelcount > 0) {
+			int y = goalsYellow.data[i].y / goalsYellow.data[i].pixelcount;
+			if (goalsYellow.data[i].pixelcount >= goalsYellowPixelCount + pow((480 - y) / 80.0, 2) * 2000) {
+				goalsYellow.data[goalCount] = goalsYellow.data[i];
+				goalsYellow.data[goalCount].x /= goalsYellow.data[goalCount].pixelcount;
+				goalsYellow.data[goalCount].y /= goalsYellow.data[goalCount].pixelcount;
+				//printf("x %d y %d pix %d\n", balls.data[ballCount].x, 
+				//	balls.data[ballCount].y, balls.data[ballCount].pixelcount);
+				++goalCount;
+			}
 		}
 	}
 	goalsYellow.count = goalCount;
@@ -457,7 +464,7 @@ bool checkRoundness(objectCollection& balls, int i, DWORD* analyzeBuffer, int ob
 	}
 }
 
-bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer) {
+bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer, int checkNumber, int startY) {
 	int x = 320; //in camera x,y coordinates 
 	int y = 240 - 1 / tanf(cameraAngle) / (tanf(angleOfView / 2) / 320);
 	int avgXWhite = 0, avgYWhite = 0, avgXBlack = 0, avgYBlack = 0, blackPixelCount = 0, whitePixelCount = 0;
@@ -480,6 +487,7 @@ bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer) {
 		step = ballY > y ? 1 : -1;
 		slope = (float)(ballX - x) / (ballY - y);
 	}
+	
 	
 	while (TRUE) {
 		int lineXint = lineX;
@@ -845,6 +853,55 @@ DWORD WINAPI GUICamera(LPVOID lpParameter)
 	return 0;
 }
 
+void pressedUP() {
+	if (currentDrivingState.speed != keyboardSpeed) {
+		currentDrivingState.speed = keyboardSpeed;
+		setSpeedAngle(currentDrivingState);
+	}
+}
+void releasedUP() {
+	if (currentDrivingState.speed != 0) {
+		currentDrivingState.speed = 0;
+		setSpeedAngle(currentDrivingState);
+	}
+}
+void pressedLeft() {
+	if (currentDrivingState.angularVelocity != keyboardAngularVelocity) {
+		currentDrivingState.angularVelocity = keyboardAngularVelocity;
+		setSpeedAngle(currentDrivingState);
+	}
+}
+void releasedLeft() {
+	if (currentDrivingState.angularVelocity != 0) {
+		currentDrivingState.angularVelocity = 0;
+		setSpeedAngle(currentDrivingState);
+	}
+}
+void pressedDown() {
+	if (currentDrivingState.speed != -keyboardSpeed) {
+		currentDrivingState.speed = -keyboardSpeed;
+		setSpeedAngle(currentDrivingState);
+	}
+}
+void releasedDown() {
+	if (currentDrivingState.speed != 0) {
+		currentDrivingState.speed = 0;
+		setSpeedAngle(currentDrivingState);
+	}
+}
+void pressedRight() {
+	if (currentDrivingState.angularVelocity != -keyboardAngularVelocity) {
+		currentDrivingState.angularVelocity = -keyboardAngularVelocity;
+		setSpeedAngle(currentDrivingState);
+	}
+}
+void releasedRight() {
+	if (currentDrivingState.angularVelocity != 0) {
+		currentDrivingState.angularVelocity = 0;
+		setSpeedAngle(currentDrivingState);
+	}
+}
+
 //main window windowprocess
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -906,7 +963,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		SetWindowTextW(hwndAngularVelocity, tempBuffer);
 
 		infoGUI = CreateWindowExW(0, L"STATIC", L"DEBUG\n INFO",
-			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 420, 110, 100, hwnd, (HMENU)ID_INFO, hInstance, NULL);;
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 420, 110, 100, hwnd, (HMENU)ID_INFO, hInstance, NULL);
+
+		infoGUI2 = CreateWindowExW(0, L"STATIC", L"DEBUG\n INFO 2",
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 520, 110, 100, hwnd, (HMENU)ID_INFO2, hInstance, NULL);
 
 		//set the proper window position
 		RECT rc;
@@ -995,39 +1055,32 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	case WM_KEYDOWN: //drive the robot when the calibrating window is open and arrow keys are pressed
 		switch (wParam) {
 		case VK_UP:
-			currentDrivingState.speed = keyboardSpeed;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			pressedUP();
 			return 0;
 		case VK_DOWN:
-			currentDrivingState.speed = -keyboardSpeed;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			pressedDown();
 			return 0;
 		case VK_LEFT:
-			currentDrivingState.angularVelocity = keyboardAngularVelocity;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			pressedLeft();
 			return 0;
 		case VK_RIGHT:
-			currentDrivingState.angularVelocity = -keyboardAngularVelocity;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			pressedRight();
 			return 0;
 		}
+		break;
 	case WM_KEYUP:
 		switch (wParam) {
 		case VK_UP:
-			currentDrivingState.speed = 0;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			releasedUP();
 			break;
 		case VK_DOWN:
-			currentDrivingState.speed = 0;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			releasedDown();
 			break;
 		case VK_LEFT:
-			currentDrivingState.angularVelocity = 0;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			releasedLeft();
 			break;
 		case VK_RIGHT:
-			currentDrivingState.angularVelocity = 0;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			releasedRight();
 			break;
 		}
 		break;
@@ -1532,39 +1585,32 @@ LRESULT CALLBACK WindowProcCalibrator(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 	case WM_KEYDOWN: //drive the robot when the calibrating window is open and arrow keys are pressed
 		switch (wParam) {
 		case VK_UP:
-			currentDrivingState.speed = keyboardSpeed;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			pressedUP();
 			return 0;
 		case VK_DOWN:
-			currentDrivingState.speed = -keyboardSpeed;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			pressedDown();
 			return 0;
 		case VK_LEFT:
-			currentDrivingState.angularVelocity = keyboardAngularVelocity;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			pressedLeft();
 			return 0;
 		case VK_RIGHT:
-			currentDrivingState.angularVelocity = -keyboardAngularVelocity;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			pressedRight();
 			return 0;
 		}
+		break;
 	case WM_KEYUP:
 		switch (wParam) {
 		case VK_UP:
-			currentDrivingState.speed = 0;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			releasedUP();
 			break;
 		case VK_DOWN:
-			currentDrivingState.speed = 0;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			releasedDown();
 			break;
 		case VK_LEFT:
-			currentDrivingState.angularVelocity = 0;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			releasedLeft();
 			break;
 		case VK_RIGHT:
-			currentDrivingState.angularVelocity = 0;
-			setSpeedAngle(currentDrivingState.speed, currentDrivingState.angle, currentDrivingState.angularVelocity);
+			releasedRight();
 			break;
 		}
 		break;

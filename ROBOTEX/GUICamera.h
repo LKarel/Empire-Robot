@@ -49,4 +49,5 @@ struct lineCollection {
 };
 
 void doubleObjectBufferSize(objectCollection*);
+void setSpeedAngle(drivingState currentDrivingState);
 //void doubleLineBufferSize(lineCollection*);
