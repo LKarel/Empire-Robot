@@ -8,7 +8,7 @@
 #define SQRT2 (1.4142135)
 #define COMPORTRADIO L"\\\\.\\COM4" //4 on NUC
 #define COMPORTDONGLE L"COM3" //3 on NUC
-#define CLOSEBALL 3.0 //distance to a close enough ball which will be driven to instead of looking for another one
+#define CLOSEBALL 6.0 //distance to a close enough ball which will be driven to instead of looking for another one
 
 HANDLE readySignal = CreateEventW(NULL, FALSE, FALSE, NULL);
 HANDLE newImageAnalyzed = CreateEventW(NULL, FALSE,FALSE,NULL);
@@ -329,6 +329,8 @@ void testSingleBallTrack() {
 		if (fieldGreenPixelCountShare < 25000) {
 			SetWindowText(stateStatusGUI, L"Cant see enough field green");
 			rotateAroundCenter(-120);
+			stateBallSeen = ballOnRight;
+			stateGoal = goalOnRight;
 		}
 
 		
@@ -367,10 +369,10 @@ void testSingleBallTrack() {
 					QueryPerformanceCounter(&stopCounter);
 					prints(L"time: %.2f\n", time(startCounter, stopCounter));
 					if (time(startCounter, stopCounter) > 3.0) {
-						rotateAroundCenter(sign * 90);
+						rotateAroundCenter(sign * 60);
 					}
 					else {
-						rotateAroundCenter(sign * 160);
+						rotateAroundCenter(sign * 80);
 					}
 				}
 				else {
@@ -594,7 +596,7 @@ void testSingleBallTrack() {
 				continue;
 			}
 			kick();
-			Sleep(50);
+			Sleep(80);
 			prints(L"KICKED\n");
 			charged = false;
 
@@ -609,7 +611,7 @@ void testSingleBallTrack() {
 			QueryPerformanceCounter(&startCounter);
 			prints(L"Looking for ball\n");
 
-			Sleep(50);
+			Sleep(80);
 			charge();
 		}
 	}
@@ -735,9 +737,64 @@ void driveToFloorXY(float floorX, float floorY) { //0.6 m/s is around the speed 
 	setSpeedAngle(currentDrivingState);
 
 	//rotateAroundFrontAndMoveForward( angularVelocity, speed, angleToBall / 4);
-	prints(L"angv: %.2f, speed: %.2f, angle: %.2f, time: %.2f, dist: %.2f, x: %.2f, y: %.2f\n", angularVelocity, speed, angleToBall, time, dist, floorX, floorY);
+	//prints(L"angv: %.2f, speed: %.2f, angle: %.2f, time: %.2f, dist: %.2f, x: %.2f, y: %.2f\n", angularVelocity, speed, angleToBall, time, dist, floorX, floorY);
 
 	QueryPerformanceCounter(&lastSpeedSent);
+}
+
+
+float speedIntegral;
+float angularVelocityIntegral;
+drivingState lastDrivingState;
+LARGE_INTEGER lastDrivingTime;
+
+void driveToFloorXYPID(float floorX, float floorY) {
+	float speedP = 1.2;
+	float speedI = 1.0 / 10.0;
+	float speedD = 1.0;
+	float angularVelocityP = 1.2;
+	float angularVelocityI = 1.0 / 10.0;
+	float angularVelocityD = 1.0;
+
+	floorX = floorX < 1 / 100 ? 1 / 100 : floorX; //use distance from the dribbler
+	floorY = fabs(floorY) < 1 / 300 ? 0.0 : floorY;
+	float dist = powf(floorX*floorX + floorY*floorY, 0.5); //distance to the ball
+	float speedMultiplier = 1 - expf(-fabs(pow((dist - 0.2) / 0.8, 6))); //pow(fabs(tanhf((dist - 0.2) / 1.0)) / tanhf(1), 2);
+	speedMultiplier = speedMultiplier > 1 ? 1 : speedMultiplier;
+	float speedBase = 1.5; //max speed
+	float finalSpeed = 0.4;
+	float speed = finalSpeed + (speedBase - finalSpeed) * speedMultiplier;
+	float angleToBall = atanf(floorY / floorX) / PI * 180.0;
+	float angularVelocity = angleToBall * 3; //turn fast enough so that we have turned by the angle to the ball by half the distance
+	float drivingTime = angleToBall / angularVelocity; //time to reach the ball
+	float angle = angleToBall;
+
+	LARGE_INTEGER currentTime;
+	QueryPerformanceCounter(&currentTime);
+
+	float timeDuration = time(lastDrivingTime, currentTime);
+	float errorSpeed = currentDrivingState.speed - speed;
+	float errorAngularVelocity = currentDrivingState.angularVelocity - angularVelocity;
+	float derivativeSpeed = (currentDrivingState.speed - lastDrivingState.speed) / timeDuration;
+	float derivativeAngularVelocity = (currentDrivingState.angularVelocity - lastDrivingState.angularVelocity) / timeDuration;
+	
+	speedIntegral += errorSpeed*timeDuration;
+	angularVelocityIntegral += errorAngularVelocity*timeDuration;
+
+	if (fabs(speedIntegral) > 3) {
+		speedIntegral = 3;
+	}
+	if (fabs(angularVelocityIntegral) > 500) {
+		angularVelocityIntegral = 500;
+	}
+
+	lastDrivingState = currentDrivingState;
+
+	currentDrivingState.speed = speedP*errorSpeed - speedI*speedIntegral - speedD*derivativeSpeed;
+	currentDrivingState.angularVelocity = angularVelocityP*errorAngularVelocity - angularVelocityI*angularVelocityIntegral - angularVelocityD*derivativeAngularVelocity;
+	currentDrivingState.angle = angleToBall;
+
+	lastDrivingTime = currentTime;
 }
 
 
@@ -1234,6 +1291,9 @@ void initUSBRadio() {
 			prints(L"WaitCommEvent failed with error %d\n", GetLastError());
 		}
 	}
+
+
+
 	prints(L"USB radio init end\n");
 }
 

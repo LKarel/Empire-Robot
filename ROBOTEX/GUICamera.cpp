@@ -1143,6 +1143,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		return 0;
 	case WM_DESTROY:
 		setSpeedAngle(0, 0, 0);
+		discharge();
 		ShowWindow(hwndCalibrate, SW_HIDE);
 		Release();
 		PostQuitMessage(0);
