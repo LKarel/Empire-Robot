@@ -55,6 +55,7 @@ void dribblerOFF();
 bool checkRoundness(objectCollection& balls, int i, DWORD* analyzeBuffer, int objectID);
 bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer);
 bool isLineBetweenRobotAndBall2(int ballX, int ballY, BYTE* pBuffer);
+bool isOnTopOfRobot(int ballX, int ballY, BYTE* pBuffer);
 
 //variables specific to the way the camera is set up, it's what Windows DirectShow uses
 IMediaControl *pControl = NULL;
@@ -307,7 +308,8 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 			balls.data[ballCount].x /= balls.data[ballCount].pixelcount;
 			balls.data[ballCount].y /= balls.data[ballCount].pixelcount;
 			//start at 142 because the robot is quite light itself, after that should be lines only
-			balls.data[ballCount].isObjectAcrossLine = isLineBetweenRobotAndBall2(balls.data[ballCount].x, balls.data[ballCount].y, pBuffer);
+			balls.data[ballCount].isObjectAcrossLine = isLineBetweenRobotAndBall2(balls.data[ballCount].x, balls.data[ballCount].y, pBuffer)
+													|| isOnTopOfRobot(balls.data[ballCount].x, balls.data[ballCount].y, pBuffer);
 			//printf("x %d y %d pix %d\n", balls.data[ballCount].x, 
 			//	balls.data[ballCount].y, balls.data[ballCount].pixelcount);
 			++ballCount;
@@ -467,6 +469,33 @@ bool checkRoundness(objectCollection& balls, int i, DWORD* analyzeBuffer, int ob
 	}
 }
 
+bool isOnTopOfRobot(int ballX, int ballY, BYTE* pBuffer) {
+	DWORD* pixBuffer = (DWORD*)pBuffer;
+	int blueCount = 0, yellowCount = 0;
+	for (int y = ballY; y >= 137; --y) {
+		for (int x = ballX - 1; x <= ballX + 1; ++x) {
+			if (x >= 0 && x < 640) {
+				int blue = (pixBuffer[x + y * 640]) & 0xFF, green = (pixBuffer[x + y * 640] >> 8) & 0xFF,
+					red = (pixBuffer[x + y * 640] >> 16) & 0xFF;
+				float hue = HUE(red, green, blue);
+				float saturation = SATURATION(red, green, blue);
+				float value = VALUE(red, green, blue);
+
+				if (COLORSFIT(goalBlueColors, hue, saturation, value)) {
+					++blueCount;
+				}
+				if (COLORSFIT(goalYellowColors, hue, saturation, value)) {
+					++yellowCount;
+				}
+			}
+		}
+	}
+	if (blueCount > 15 || yellowCount > 15) {
+		return true;
+	}
+	return false;
+}
+
 //considers as elements of one line if there isn't a larger than 10px gap of incorrect colors for the line
 //then uses these line elements to determine if there is a black line after a white one and they are close enough
 bool isLineBetweenRobotAndBall2(int ballX, int ballY, BYTE* pBuffer) {
@@ -501,7 +530,7 @@ bool isLineBetweenRobotAndBall2(int ballX, int ballY, BYTE* pBuffer) {
 		int lineXint = lineX;
 		int lineYint = lineY;
 
-		if (lineYint >= 142 && lineYint < 480) {
+		if (lineYint >= 137 && lineYint < 480) {
 			bool atLeastOneBlack = false, atLeastOneWhite = false;
 			for (int X2 = lineXint - 1; X2 <= lineXint + 1; ++X2) { //check 3 pixels on the line
 				if (X2 >= 0 && X2 < 640) {
