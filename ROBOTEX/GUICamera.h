@@ -48,6 +48,28 @@ struct lineCollection {
 	int size; //how many objects the data buffer can hold
 };
 
+class Timer { //used for timing various events and states
+public:
+	LARGE_INTEGER startCounter, stopCounter;
+	static LARGE_INTEGER timerFrequency;
+	bool stopped = true;
+
+	void start() {
+		QueryPerformanceCounter(&startCounter);
+		stopped = false;
+	}
+	float time() {
+		if (!stopped) {
+			QueryPerformanceCounter(&stopCounter);
+		}
+		return (float)(double(stopCounter.QuadPart - startCounter.QuadPart) / double(timerFrequency.QuadPart));
+	}
+	void stop() {
+		QueryPerformanceCounter(&stopCounter);
+		stopped = true;
+	}
+};
+
 void doubleObjectBufferSize(objectCollection*);
 void setSpeedAngle(drivingState currentDrivingState);
 //void doubleLineBufferSize(lineCollection*);

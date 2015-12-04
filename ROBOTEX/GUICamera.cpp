@@ -72,10 +72,9 @@ DWORD *houghTransformBuffer;	//buffer for the values of the Hough transform, x a
 BYTE *DShowBuffer; //the buffer that the dshow displays on the screen
 BOOL start = TRUE;
 DWORD* pixelsTest;
-LARGE_INTEGER timerFrequency2;
-LARGE_INTEGER startFPSCounter;
-LARGE_INTEGER stopFPSCounter;
+Timer FPSTimer;
 DWORD FPSCount;
+bool isLineStraightAhead;
 
 //headers for the bitmap, used if you want to write an image to a file or create a bitmap for displaying
 BITMAPINFOHEADER bmih;
@@ -113,9 +112,23 @@ HWND statusFPS2;
 HWND statusBall;
 HWND infoGUI;
 HWND infoGUI2;
+HWND infoGUI3;
 HWND goalSelectCheckBox;
 HWND hwndDrivingSpeed;
 HWND hwndAngularVelocity;
+
+HWND SP;
+HWND SI;
+HWND SD;
+HWND AVP;
+HWND AVI;
+HWND AVD;
+extern float speedP;
+extern float speedI;
+extern float speedD;
+extern float angularVelocityP;
+extern float angularVelocityI;
+extern float angularVelocityD;
 
 BOOLEAN calibrating = FALSE;	//state variable
 BOOLEAN whitenThresholdPixels;	//whether to make the selected pixels white during calibration
@@ -144,7 +157,7 @@ enum {
 	ID_BALLS_PIXELCOUNT, ID_GOALSBLUE_PIXELCOUNT, ID_CHECKBOX_EXCLUDE,
 	ID_GOALSYELLOW_PIXELCOUNT, ID_LINES_PIXELCOUNT, ID_STATUS_TEXT, ID_BUTTON_CHARGE, ID_BUTTON_KICK, ID_BUTTON_DISCHARGE,
 	ID_BUTTON_DRIBBLER_ON, ID_BUTTON_DRIBBLER_OFF, ID_STATUS_FPS, ID_STATUS_BALL, ID_GOAL_SELECTION, ID_SET_SPEED,
-	ID_SET_ANGULAR_VELOCITY, ID_INFO, ID_INFO2
+	ID_SET_ANGULAR_VELOCITY, ID_INFO, ID_INFO2, ID_INFO3, ID_SP, ID_SI, ID_SD, ID_AVP, ID_AVI, ID_AVD
 };
 
 objectCollection balls, goalsBlue, goalsYellow, ballsShare, goalsBlueShare, goalsYellowShare, linesBlack, linesWhite; //local data structure for holding objects and shared structures
@@ -393,8 +406,8 @@ void analyzeImage(double Time, BYTE *pBuffer, long BufferLen) {
 	CopyMemory(linesShare.data, lines.data, lines.count*sizeof(lineInfo));
 	
 	fieldGreenPixelCountShare = fieldGreenPixelCount;
+	isLineStraightAhead = isLineBetweenRobotAndBall2(320, 300, pBuffer);
 	ReleaseMutex(writeMutex);
-	SetEvent(newImageAnalyzed);
 }
 
 //draws a cross of the color #0xAABBGGRR to coordinates x, y starting from the bottom left corner (Windows bitmap uses that)
@@ -530,10 +543,10 @@ bool isLineBetweenRobotAndBall2(int ballX, int ballY, BYTE* pBuffer) {
 		int lineXint = lineX;
 		int lineYint = lineY;
 
-		if (lineYint >= 137 && lineYint < 480) {
+		if (lineYint >= 107 && lineYint < 480) {
 			bool atLeastOneBlack = false, atLeastOneWhite = false;
 			for (int X2 = lineXint - 1; X2 <= lineXint + 1; ++X2) { //check 3 pixels on the line
-				if (X2 >= 0 && X2 < 640) {
+				if (X2 >= 0 && X2 < 640 && (X2 >= 140 && X2 <= 525 || lineYint >= 140)) {
 					//wprintf(L"lineXint: %d, lineYint: %d\n", X2, lineYint);
 					int blue = (pixBuffer[X2 + lineYint * 640]) & 0xFF, green = (pixBuffer[X2 + lineYint * 640] >> 8) & 0xFF,
 						red = (pixBuffer[X2 + lineYint * 640] >> 16) & 0xFF;
@@ -608,7 +621,7 @@ bool isLineBetweenRobotAndBall2(int ballX, int ballY, BYTE* pBuffer) {
 		if (linesBlack.data[b].pixelcount > 25) {
 			for (int w = 0; w <= whiteLineCount; ++w) {
 				if (linesBlack.data[b].y > linesWhite.data[w].y && linesBlack.data[b].y - linesWhite.data[w].y < 70
-					&& linesWhite.data[w].pixelcount > 25) {
+					&& linesWhite.data[w].pixelcount > 20 && linesBlack.data[b].pixelcount > 20) {
 					return true;
 				}
 			}
@@ -646,7 +659,7 @@ bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer) {
 	while (TRUE) {
 		int lineXint = lineX;
 		int lineYint = lineY;
-		if (lineYint >= 142 && lineYint < 480) {
+		if (lineYint >= 0 && lineYint < 480) {
 			for (int X2 = lineXint - 1; X2 <= lineXint + 1; ++X2) { //check 3 pixels on the line
 				if (X2 >= 0 && X2 < 640) {
 					//wprintf(L"lineXint: %d, lineYint: %d\n", X2, lineYint);
@@ -765,12 +778,10 @@ public:
 		++FPSCount;
 		if (FPSCount % 5 == 0) {
 			wchar_t data[32] = {};
-			QueryPerformanceCounter(&stopFPSCounter);
-			double time = double(stopFPSCounter.QuadPart - startFPSCounter.QuadPart) / double(timerFrequency2.QuadPart);
-			float FPS = 5.0 / time;
+			float FPS = 5.0 / FPSTimer.time();
 			swprintf_s(data, L"FPS: %.2f", FPS);
 			SetWindowText(statusFPS, data);
-			startFPSCounter.QuadPart = stopFPSCounter.QuadPart;
+			FPSTimer.start();
 		}
 
 		//smoothen the image by averaging over pixel values
@@ -826,6 +837,7 @@ public:
 		else if(g_pBuffer != NULL)
 		{
 			analyzeImage(Time, pBuffer, BufferLen);
+
 			//prints(L"analyzed %d\n", balls.count);
 			for (int i = 0; i < balls.count; ++i) {
 				if (balls.data[i].isObjectAcrossLine) {
@@ -933,8 +945,7 @@ DWORD WINAPI GUICamera(LPVOID lpParameter)
 	//Sleep(-1);
 
 	//set up timers
-	QueryPerformanceFrequency(&timerFrequency2);
-	QueryPerformanceCounter(&startFPSCounter);
+	FPSTimer.start();
 
 	//analyzeTest();
 	//Sleep(-1);
@@ -1123,10 +1134,32 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		SetWindowTextW(hwndAngularVelocity, tempBuffer);
 
 		infoGUI = CreateWindowExW(0, L"STATIC", L"DEBUG\n INFO",
-			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 420, 110, 100, hwnd, (HMENU)ID_INFO, hInstance, NULL);
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 420, 110, 80, hwnd, (HMENU)ID_INFO, hInstance, NULL);
 
 		infoGUI2 = CreateWindowExW(0, L"STATIC", L"DEBUG\n INFO 2",
-			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 520, 110, 100, hwnd, (HMENU)ID_INFO2, hInstance, NULL);
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 500, 110, 80, hwnd, (HMENU)ID_INFO2, hInstance, NULL);
+
+		infoGUI3 = CreateWindowExW(0, L"STATIC", L"DEBUG\n INFO 3",
+			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 580, 110, 80, hwnd, (HMENU)ID_INFO3, hInstance, NULL);
+
+		SP = CreateWindowExW( //for testing pid constants
+			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | ES_CENTER,
+			640 + 640 , 620, 55, 20, hwnd, (HMENU)ID_SP, hInstance, NULL);
+		SI = CreateWindowExW(
+			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | ES_CENTER,
+			640 + 640, 640, 55, 20, hwnd, (HMENU)ID_SI, hInstance, NULL);
+		SD = CreateWindowExW(
+			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | ES_CENTER,
+			640 + 640, 660, 55, 20, hwnd, (HMENU)ID_SD, hInstance, NULL);
+		AVP = CreateWindowExW(
+			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | ES_CENTER,
+			640 + 640 + 55, 620, 55, 20, hwnd, (HMENU)ID_AVP, hInstance, NULL);
+		AVI = CreateWindowExW(
+			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | ES_CENTER,
+			640 + 640 + 55, 640, 55, 20, hwnd, (HMENU)ID_AVI, hInstance, NULL);
+		AVD = CreateWindowExW(
+			0, L"EDIT", NULL, WS_CHILD | WS_VISIBLE | ES_CENTER,
+			640 + 640 + 55, 660, 55, 20, hwnd, (HMENU)ID_AVD, hInstance, NULL);
 
 		//set the proper window position
 		RECT rc;
@@ -1207,6 +1240,72 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 				GetWindowTextW(hwndAngularVelocity, buffer, 15);
 				keyboardAngularVelocity = _wtof(buffer);
 				prints(L"keyboardAngularVelocity: %.2f\n", keyboardAngularVelocity);
+				return 0;
+			default:
+				break;
+			}
+		case ID_SP:
+			switch (HIWORD(wParam)) {
+			case EN_CHANGE:
+				wchar_t buffer[16];
+				int charsConverted;
+				GetWindowTextW(SP, buffer, 15);
+				speedP = _wtof(buffer);
+				return 0;
+			default:
+				break;
+			}
+		case ID_SI:
+			switch (HIWORD(wParam)) {
+			case EN_CHANGE:
+				wchar_t buffer[16];
+				int charsConverted;
+				GetWindowTextW(SI, buffer, 15);
+				speedI = _wtof(buffer);
+				return 0;
+			default:
+				break;
+			}
+		case ID_SD:
+			switch (HIWORD(wParam)) {
+			case EN_CHANGE:
+				wchar_t buffer[16];
+				int charsConverted;
+				GetWindowTextW(SD, buffer, 15);
+				speedD = _wtof(buffer);
+				return 0;
+			default:
+				break;
+			}
+		case ID_AVP:
+			switch (HIWORD(wParam)) {
+			case EN_CHANGE:
+				wchar_t buffer[16];
+				int charsConverted;
+				GetWindowTextW(AVP, buffer, 15);
+				angularVelocityP = _wtof(buffer);
+				return 0;
+			default:
+				break;
+			}
+		case ID_AVI:
+			switch (HIWORD(wParam)) {
+			case EN_CHANGE:
+				wchar_t buffer[16];
+				int charsConverted;
+				GetWindowTextW(AVI, buffer, 15);
+				angularVelocityI = _wtof(buffer);
+				return 0;
+			default:
+				break;
+			}
+		case ID_AVD:
+			switch (HIWORD(wParam)) {
+			case EN_CHANGE:
+				wchar_t buffer[16];
+				int charsConverted;
+				GetWindowTextW(AVD, buffer, 15);
+				angularVelocityD = _wtof(buffer);
 				return 0;
 			default:
 				break;
