@@ -8,9 +8,12 @@ void setSpeedAngle(float speed, float angle, float angularVelocity); //from the 
 //max wheel speed is around 2.176 m/s, max rot speed of the robot is around 890 degrees/s
 #define wheelRadius (3.5 / 100.0) //in meters
 #define baseRadius (14.0 / 100.0) //base radius in meters from the center to the wheel
-#define cameraHeight (17.0 / 100.0) //height in meters of the camera
+#define cameraHeight (18.0 / 100.0) //height in meters of the camera
 #define cameraAngle (25.0 * PI / 180.0) //the angle in radians that the camera is down with respect to the horizontal, height of camera is 17cm, midpoint of the image is 37 cm away
 #define angleOfView (59.0 * PI / 180.0) //the horizontal angle of view in radians, it saw a 77cm wide rule 67cm away along the floor
+
+//camera midpoint distance on floor is around 36 cm
+//45 cm is the distance across the horizontal at the camera midpoint
 
 
 //information about a detected object
@@ -67,6 +70,15 @@ public:
 	void stop() {
 		QueryPerformanceCounter(&stopCounter);
 		stopped = true;
+	}
+	void continueTimer() {
+		if (stopped) {
+			LARGE_INTEGER time;
+			time.QuadPart = stopCounter.QuadPart - startCounter.QuadPart;
+			QueryPerformanceCounter(&startCounter);
+			startCounter.QuadPart -= time.QuadPart;
+			stopped = false;
+		}
 	}
 };
 

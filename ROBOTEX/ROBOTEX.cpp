@@ -10,7 +10,7 @@
 #define COMPORTDONGLE L"COM3" //3 on NUC
 #define BALLRADIUS (1.5 / 100.0)
 #define GOALMIDHEIGHT (5.0 / 100.0)
-#define FIELDGREENCOUNTTHRESHOLD 25000
+#define FIELDGREENCOUNTTHRESHOLD 40000
 
 HANDLE readySignal = CreateEventW(NULL, FALSE, FALSE, NULL);
 HANDLE newImageAnalyzed = CreateEventW(NULL, FALSE,FALSE,NULL);
@@ -31,7 +31,7 @@ OVERLAPPED osReaderDongle = { };
 OVERLAPPED osWriteDongle = { };
 OVERLAPPED osStatusDongle = { };
 
-Timer FPS2Timer, movingTimer, lastSpeedSentTimer, lastBallFoundTimer;
+Timer FPS2Timer, movingTimer, lastSpeedSentTimer, lastBallFoundTimer, lastGoalFoundTimer;
 LARGE_INTEGER Timer::timerFrequency;
 
 DWORD dwCommEvent = 0; //variable for the WaitCommEvent, stores the type of the event that occurred
@@ -78,7 +78,7 @@ int findNearestFloorBall(float& nearestBallX, float& nearestBallY, int& currentx
 void findLargestObject(int& currentx, int& currenty, objectCollection& objects);
 void convertToFloorCoordinates(int currentx, int currenty, float& floorX, float& floorY, float heightFromFloor);
 void driveToFloorXY(float floorX, float floorY);
-void driveToFloorXYPID(float floorX, float floorY);
+void driveToFloorXYPID(float floorX, float floorY, float);
 void rotateAroundFront(float angularVelocity);
 void rotateAroundFrontAndMoveForward(float angularVelocity, float speed, float angle);
 void dribblerON();
@@ -124,7 +124,7 @@ void listenToCommands() {
 	initUSBRadio();
 	//sendString(hCOMDongle, "9:fs0\n");
 	lastSpeedSentTimer.start();
-	HANDLE waitHandles[3] = { osStatus.hEvent, startSignal, osStatusDongle.hEvent };
+	HANDLE waitHandles[3] = { startSignal, osStatusDongle.hEvent };
 
 	stateGoal = goalOnRight;
 	stateBallSeen = ballOnRight;
@@ -137,8 +137,8 @@ void listenToCommands() {
 		swprintf_s(buffer, L"NX %.2f \n NY %.2f\n ang %.2f", floorX, floorY, angle);
 		SetWindowText(infoGUI, buffer);
 
-		//swprintf_s(buffer, L"greencount %d", fieldGreenPixelCountShare);
-		//SetWindowText(infoGUI2, buffer);
+		swprintf_s(buffer, L"greencount %d", fieldGreenPixelCountShare);
+		SetWindowText(infoGUI3, buffer);
 
 		if (hCOMDongle != INVALID_HANDLE_VALUE) {
 			if (lastSpeedSentTimer.time() > 0.5) { //if we send the speeds too often we get communication timeouts
@@ -146,13 +146,13 @@ void listenToCommands() {
 				lastSpeedSentTimer.start();
 			}
 		}
-		switch (WaitForMultipleObjects(3, waitHandles, FALSE, 250)) {
+		switch (WaitForMultipleObjects(2, waitHandles, FALSE, 50)) {
+		//case WAIT_OBJECT_0:
+		//	prints(L"radio event %X\n", dwCommEvent);
+		//	//receiveCommand();
+		//	//WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus);
+		//	break;
 		case WAIT_OBJECT_0:
-			prints(L"radio event %X\n", dwCommEvent);
-			receiveCommand();
-			WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus);
-			break;
-		case WAIT_OBJECT_0 + 1:
 			prints(L"Start signal arrived.\n");
 			SetWindowText(stateStatusGUI, L"started");
 			dribblerON();
@@ -160,30 +160,33 @@ void listenToCommands() {
 			dribblerOFF();
 			//discharge();
 			break;
-		case WAIT_OBJECT_0 + 2: //info from the main board controller
+		case WAIT_OBJECT_0 + 1: //info from the main board controller
 			//prints(L"main board COM event %X\n", dwCommEventDongle);
 			handleMainBoardCommunication();
 			WaitCommEvent(hCOMDongle, &dwCommEventDongle, &osStatusDongle); //listen to new events, ie beginning character
 			break;
 		}
+		receiveCommand();
 	}
 }
 
 void play() {
-	HANDLE waitHandles[5] = { osStatus.hEvent, stopSignal, osStatusDongle.hEvent, calibratingSignal, newImageAnalyzed };
+	HANDLE waitHandles[5] = { stopSignal, osStatusDongle.hEvent, calibratingSignal, newImageAnalyzed };
 	int currentx = 320, currenty = 0, FPS2Count = 0;
 	int timeOut = 30;
 	float movingTime; //timeout after sending each command
 	objectCollection goals, goals2;
-	float nearestBallFloorX = 0, nearestBallFloorY = 0;
+	float nearestBallFloorX = 0, nearestBallFloorY = 0, initialBallDistance = 0;
 	ignoreX = 0, ignoreY = 0;
-	Timer ignoreTimer, ballSearchRotationSpeedTimer, chargingTimer, wanderingTimer;
+	Timer ignoreTimer, ballSearchRotationSpeedTimer, chargingTimer, wanderingTimer, frameTimer;
+	float lastBallFoundTime = 0, lastGoalFoundTime = 0, wanderingTime = 0; 
 	bool rotateFast = true;
 	FPS2Timer.start();
 	FPS2Count = 0;
+	frameTimer.start();
 
 	bool turnFast = true;
-	state = driveToBall;
+	state = lookForBall;
 	SetWindowText(goalGuessState, L"Goal on right");
 	isBallInDribbler = false;
 	prints(L"Started, driving to ball\n");
@@ -193,6 +196,7 @@ void play() {
 	chargingTimer.start();
 	sendString(hCOMDongle, "9:bl\n");
 	lastBallFoundTimer.start();
+	lastGoalFoundTimer.start();
 
 	while (true) {
 
@@ -206,14 +210,14 @@ void play() {
 		SetWindowText(infoGUI, buffer);
 		//end display test stuff
 
-		switch (WaitForMultipleObjects(5, waitHandles, FALSE, timeOut)) {
-		case WAIT_OBJECT_0: //start of a new command from the radio detected
-								//ResetEvent(osStatus.hEvent);
-			prints(L"radio event %X\n", dwCommEvent);
-			receiveCommand(); //receive and interpret the command
-			WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus); //listen to new events, ie beginning character
-			continue;
-		case WAIT_OBJECT_0 + 1: //stop signal
+		switch (WaitForMultipleObjects(4, waitHandles, FALSE, timeOut)) {
+		//case WAIT_OBJECT_0: //start of a new command from the radio detected
+		//						//ResetEvent(osStatus.hEvent);
+		//	prints(L"radio event %X\n", dwCommEvent);
+		//	//receiveCommand(); //receive and interpret the command
+		//	//WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus); //listen to new events, ie beginning character
+		//	continue;
+		case WAIT_OBJECT_0: //stop signal
 			prints(L"Stop signal arrived.\n");
 			SetWindowText(stateStatusGUI, L"stopped");
 			currentDrivingState.angle = 0, currentDrivingState.speed = 0, currentDrivingState.vx = 0,
@@ -221,20 +225,21 @@ void play() {
 			setSpeedAngle(currentDrivingState);
 			ResetEvent(startSignal);
 			return;
-		case WAIT_OBJECT_0 + 2: //info from the main board controller
+		case WAIT_OBJECT_0 + 1: //info from the main board controller
 								//prints(L"main board COM event %X\n", dwCommEvent);
 			handleMainBoardCommunication();
 			WaitCommEvent(hCOMDongle, &dwCommEventDongle, &osStatusDongle); //listen to new events, ie beginning character
 			continue;
-		case WAIT_OBJECT_0 + 3: //calibrating signal
+		case WAIT_OBJECT_0 + 2: //calibrating signal
 			SetWindowText(stateStatusGUI, L"calibrating");
 			rotateAroundCenter(0);
 			//WaitForSingleObject(calibratingEndSignal, INFINITE);
 			continue;
-		case WAIT_OBJECT_0 + 4: //new image analyzed
+		case WAIT_OBJECT_0 + 3: //new image analyzed
 			//update FPS rate after every 5 images
 			++FPS2Count;
 			if (FPS2Count % 5 == 0) {
+				receiveCommand();
 				float FPS = 5.0 / FPS2Timer.time();
 				swprintf_s(buffer, L"FPS2: %.2f", FPS);
 				SetWindowText(statusFPS2, buffer);
@@ -267,11 +272,11 @@ void play() {
 				ignoreY = ignoreYNew;
 
 				swprintf_s(buffer, L"IgX %.2f IgY %.2f\n NX %.2f NY %.2f", ignoreX, ignoreY, ignoreXNew, ignoreYNew);
-				SetWindowText(infoGUI2, buffer);
+				//SetWindowText(infoGUI2, buffer);
 			}
 		}
 		else {
-			SetWindowText(infoGUI2, L"Ignore OFF");
+			//SetWindowText(infoGUI2, L"Ignore OFF");
 		}
 
 		//keep track of the likely direction to turn to to find the goal
@@ -297,22 +302,41 @@ void play() {
 			}
 		}
 
-		if (ballsOnFieldInSight() > 0) {
-			if(ballsShare.data[0].x > 320){
-				stateBallSeen = ballOnRight;
-			}
-			else {
-				stateBallSeen = ballOnLeft;
+		if (ballsOnFieldInSight() > 0) { //keep track of the likely direction to turn to to find the ball
+			for (int i = 0; i < ballsShare.count; ++i) {
+				if (!ballsShare.data[i].isObjectAcrossLine) {
+					if (ballsShare.data[i].x > 320) {
+						stateBallSeen = ballOnRight;
+					}
+					else {
+						stateBallSeen = ballOnLeft;
+					}
+				}
 			}
 		}
-		if (ballsOnFieldInSight() > 0 || isBallInDribbler || state == kickBall || state == wanderForBall) {
-			lastBallFoundTimer.start();
+		float frameTime = frameTimer.time();
+		frameTimer.start();
+
+		if (ballsOnFieldInSight() == 0 && state == lookForBall && !isBallInDribbler) {
+			lastBallFoundTime += frameTime;
 		}
-		else if (lastBallFoundTimer.time() > 3.1) {
+		else if (ballsOnFieldInSight > 0) {
+			lastBallFoundTime = 0;
+		}
+		if (goals.count == 0 && state == lookForGoal) {
+			lastGoalFoundTime += frameTime;
+		}
+		else if (goals.count > 0) {
+			lastGoalFoundTime = 0;
+		}
+		if (lastBallFoundTime > 3.0 || lastGoalFoundTime > 3.0) {
 			prints(L"Wandering for ball\n");
 			state = wanderForBall;
-			wanderingTimer.start();
 			movingTimer.start();
+			wanderingTimer.start();
+			wanderingTime = 0;
+			lastBallFoundTime = 0;
+			lastGoalFoundTime = 0;
 		}
 
 		if (fieldGreenPixelCountShare < FIELDGREENCOUNTTHRESHOLD && state != rotate90 && state != wanderForBall) {
@@ -338,16 +362,11 @@ void play() {
 					else {
 						rotateAroundCenter(sign * 40);
 					}
-					if (movingTimer.time() > 3.0) {
-						prints(L"Wandering for ball\n");
-						state = wanderForBall;
-						wanderingTimer.start();
-						movingTimer.start();
-					}
 				}
 				else {
 					findNearestFloorBall(nearestBallFloorX, nearestBallFloorY, currentx, currenty);
-					prints(L"found nearest ball X: %.2f, Y: %.2f, currentx: %d, currenty: %d\n", nearestBallFloorX, nearestBallFloorY, currentx, currenty);
+					initialBallDistance = pow(nearestBallFloorX*nearestBallFloorX + nearestBallFloorY*nearestBallFloorY, 0.5);
+					//prints(L"found nearest ball X: %.2f, Y: %.2f, currentx: %d, currenty: %d\n", nearestBallFloorX, nearestBallFloorY, currentx, currenty);
 					prints(L"Driving to ball\n");
 					state = driveToBall;
 					rotateAroundCenter(0);
@@ -358,7 +377,7 @@ void play() {
 		if (state == driveToBall) {
 			if (isBallInDribbler) {
 				rotateAroundCenter(0);
-				Sleep(150);
+				Sleep(0);
 				prints(L"Looking for goal");
 				state = lookForGoal;
 				movingTimer.start();
@@ -376,7 +395,7 @@ void play() {
 					prints(L"Looking for ball\n");
 					continue;
 				}
-				driveToFloorXYPID(floorX, floorY);
+				driveToFloorXYPID(floorX, floorY, initialBallDistance);
 			}
 		}
 		if (state == lookForGoal) {
@@ -403,15 +422,7 @@ void play() {
 						sign = 1;
 					}
 					if (goals.count == 0) { //no goals in sight, turn faster
-						if (movingTimer.time() > 3.0) { //haven't found the goal in a while, drive towards the other goal
-							prints(L"Wandering");
-							state = wanderForBall;
-							wanderingTimer.start();
-							movingTimer.start();
-						}
-						else {
-							rotateAroundFront(sign * 200);
-						}
+						rotateAroundFront(sign * 200);
 					}
 					else{
 						//around 120 degs/s is max speed so that the goal doesn't go out, less than 30 degs/s is pointless
@@ -437,7 +448,7 @@ void play() {
 				movingTimer.start();
 			}
 			if (!charged) {//not charged, wait more
-				if (chargingTimer.time() > 3.5) { //by this time we definitely should have gotten a charge command
+				if (chargingTimer.time() > 3.5) { //by this time we definitely should have gotten a charge command, charge again
 					prints(L"No charge info received in time\n");
 					chargingTimer.start();
 					charge();
@@ -473,6 +484,8 @@ void play() {
 			}
 			else {
 				prints(L"Looking for ball\n");
+				stateBallSeen = ballOnLeft;
+				stateGoal = goalOnLeft;
 				state = lookForBall;
 				movingTimer.start();
 			}
@@ -480,10 +493,16 @@ void play() {
 
 		//wander around, try to drive towards a goal far enough away, if can't find one, drive to a direction where there are no goals, lines and there is enough green
 		if (state == wanderForBall) {
+			wanderingTime += frameTime;
 			SetWindowText(stateStatusGUI, L"Wandering");
-			if (movingTimer.time() > 4.0) { //if we didn't find a far away goal in 4 seconds
-				if (goalsBlueShare.count != 0 || goalsYellowShare.count != 0 || isLineStraightAhead || fieldGreenPixelCountShare < FIELDGREENCOUNTTHRESHOLD) {
-					rotateAroundCenter(120);
+			if (wanderingTime > 4.0) { //if we didn't find a far away goal in 4 seconds
+				int goalBlueX, goalBlueY;
+				int goalYellowX, goalYellowY;
+				findLargestObject(goalBlueX, goalBlueY, goalsBlueShare);
+				findLargestObject(goalYellowX, goalYellowY, goalsYellowShare);
+				if (goalsBlueShare.count != 0 && goalBlueX >= 150 && goalBlueX <= 500 
+					|| goalsYellowShare.count != 0 && goalYellowX >= 150 && goalYellowX <= 500 || isLineStraightAhead || fieldGreenPixelCountShare < FIELDGREENCOUNTTHRESHOLD) {
+					rotateAroundCenter(100);
 					wanderingTimer.start();
 				}
 				else {
@@ -502,7 +521,6 @@ void play() {
 					wanderingTimer.start();
 				}
 				else {
-					movingTimer.start();
 					if (wanderingTimer.time() > 1.0) {
 						movingTimer.start();
 						state = lookForBall;
@@ -522,7 +540,7 @@ void play() {
 							driveForward(0.5);
 						}
 						else {
-							rotateAroundCenter(80);
+							rotateAroundCenter(100);
 							wanderingTimer.start();
 						}
 					}
@@ -695,15 +713,19 @@ float angularVelocityP = 0.5;
 float angularVelocityI = 20.0;
 float angularVelocityD = 0.001;
 
-void driveToFloorXYPID(float floorX, float floorY) {
+void driveToFloorXYPID(float floorX, float floorY, float initialBallDistance) {
 
 	floorX = floorX < 1 / 100 ? 1 / 100 : floorX; //use distance from the dribbler
 	floorY = fabs(floorY) < 1 / 300 ? 0.0 : floorY;
 	float dist = powf(floorX*floorX + floorY*floorY, 0.5); //distance to the ball
 
-	float speedBase = 1.6; //max speed
-	float finalSpeed = 0.35;
-	float speed = finalSpeed + (speedBase - finalSpeed) * tanhf((dist-0.15)/(speedBase - finalSpeed));
+	float speedBase = 1.9; //max speed
+	float finalSpeed = 0.4;
+	//if (initialBallDistance > 0.8) {
+	//	finalSpeed = 0.30;
+	//}
+	//float speed = finalSpeed + (speedBase - finalSpeed) * tanhf((dist-0.15)/(speedBase - finalSpeed));
+	float speed = finalSpeed + (speedBase - finalSpeed) * pow(tanhf((dist - 0.15)), 2);
 	float angleToBall = atanf(floorY / floorX) / PI * 180.0;
 	float angularVelocity = angleToBall * 3.5; //turn fast enough so that we have turned by the angle to the ball by half the distance
 	float angle = angleToBall;
@@ -749,6 +771,9 @@ void driveToFloorXYPID(float floorX, float floorY) {
 	//prints(L"cs: %.2f, cav: %.2f, ang: %.2f, sP: %.2f, sI: %.2f, sD: %.2f, avP: %.2f, avI: %.2f, avD: %.2f\n",
 	//	currentDrivingState.speed, currentDrivingState.angularVelocity, currentDrivingState.angle, speedP, speedI, speedD,
 	//	angularVelocityP, angularVelocityI, angularVelocityD);
+	
+	swprintf_s(buffer, L"s: %.2f, av: %.2f", currentDrivingState.speed, currentDrivingState.angularVelocity);
+	SetWindowTextW(infoGUI2, buffer);
 }
 
 
@@ -882,14 +907,7 @@ void respondACK() {
 	char response[16] = {};
 	DWORD bytesWritten = 0;
 	sprintf_s(response, "a%sACK------", currentID);
-	if (!WriteFile(hCOMRadio, response, 12, &bytesWritten, &osWrite)) {
-		if (GetLastError() != ERROR_IO_PENDING) {
-			prints(L"USB radio ACK response failed with error %X\n", GetLastError());
-		}
-		if (!GetOverlappedResult(hCOMRadio, &osWrite, &bytesWritten, TRUE)) {
-			prints(L"USB ACK radio write failed with error %X\n", GetLastError());
-		}
-	}
+	WriteFile(hCOMRadio, response, 12, &bytesWritten, NULL);
 	if (bytesWritten != 12) {
 		prints(L"ACK write timeout\n");
 	}
@@ -901,9 +919,13 @@ void receiveCommand() { //the character 'a' was received from the radio, now rea
 	DWORD bytesRead = 0;
 	DWORD start = 0, length = 0; //the current position in the buffer and the length of the unread buffer
 	char readBuffer[128] = {};
-	readCOM(hCOMRadio, readBuffer, 12, bytesRead);
+	//readCOM(hCOMRadio, readBuffer, 12, bytesRead);
+	ReadFile(hCOMRadio, readBuffer, 12, &bytesRead, NULL);
 	length += bytesRead;
-	prints(L"Checking command v1: %S, valid: %d\n", readBuffer + start, validCommand(readBuffer));
+	//prints(L"Checking command v1: %S, valid: %d\n", readBuffer + start, validCommand(readBuffer));
+	if (length < 12) {
+		return;
+	}
 
 	while (true) {
 		if (readBuffer[start] != 'a' && length > 0) {
@@ -912,11 +934,12 @@ void receiveCommand() { //the character 'a' was received from the radio, now rea
 		}
 		else {
 			if (length < 12) {
-				readCOM(hCOMRadio, readBuffer + start + length, 12, bytesRead);
-				prints(L"Checking command v2: %S, valid: %d\n", readBuffer + start, validCommand(readBuffer));
+				//readCOM(hCOMRadio, readBuffer + start + length, 12, bytesRead);
+				ReadFile(hCOMRadio, readBuffer + start + length, 12, &bytesRead, NULL);
+				//prints(L"Checking command v2: %S, valid: %d\n", readBuffer + start, validCommand(readBuffer));
 				length += bytesRead;
 				if (length < 12) {
-					prints(L"returning\n");
+					//prints(L"returning\n");
 					return;
 				}
 				if (!validCommand(readBuffer + start)) {
@@ -930,29 +953,30 @@ void receiveCommand() { //the character 'a' was received from the radio, now rea
 				}
 			}
 			else {
-				prints(L"Checking command v3: %S, valid: %d\n", readBuffer + start, validCommand(readBuffer));
+				//prints(L"Checking command v3: %S, valid: %d\n", readBuffer + start, validCommand(readBuffer));
 				checkCommand(readBuffer + start);
 				++start;
 				--length;
 			}
 		}
 		if (length == 0) {
-			readCOM(hCOMRadio, readBuffer + start, 12, bytesRead);
+			//readCOM(hCOMRadio, readBuffer + start, 12, bytesRead);
+			ReadFile(hCOMRadio, readBuffer + start, 12, &bytesRead, NULL);
 			length += bytesRead;
-			prints(L"Checking command v4: %S, valid: %d\n", readBuffer + start, validCommand(readBuffer));
+			//prints(L"Checking command v4: %S, valid: %d\n", readBuffer + start, validCommand(readBuffer));
 			if (length < 12) {
-				prints(L"returning\n");
+				//prints(L"returning\n");
 				return;
 			}
 		}
 		if (start > 64) {
-			prints(L"zeroing\n");
+			//prints(L"zeroing\n");
 			CopyMemory(readBuffer, readBuffer + start, length);
 			ZeroMemory(readBuffer + length, 128 - length);
 			start = 0;
 		}
 	}
-	prints(L"returning\n");
+	//prints(L"returning\n");
 }
 
 
@@ -1187,11 +1211,11 @@ float calculateDirection(lineInfo line) {
 
 void initUSBRadio() {
 	COMMTIMEOUTS timeouts;
-	timeouts.ReadIntervalTimeout = 40; //ms, max time before arrival of next byte
-	timeouts.ReadTotalTimeoutConstant = 15; //added to multiplier*bytes
-	timeouts.ReadTotalTimeoutMultiplier = 10; //ms times bytes
-	timeouts.WriteTotalTimeoutConstant = 15;
-	timeouts.WriteTotalTimeoutMultiplier = 10;
+	timeouts.ReadIntervalTimeout = 2; //ms, max time before arrival of next byte
+	timeouts.ReadTotalTimeoutConstant = 1; //added to multiplier*bytes
+	timeouts.ReadTotalTimeoutMultiplier = 1; //ms times bytes
+	timeouts.WriteTotalTimeoutConstant = 5;
+	timeouts.WriteTotalTimeoutMultiplier = 5;
 
 	osReader.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
 	osWrite.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
@@ -1199,7 +1223,7 @@ void initUSBRadio() {
 
 	DCB dcb;
 	hCOMRadio = CreateFile(COMPORTRADIO, GENERIC_READ | GENERIC_WRITE, 0, 0, //COM4 on the NUC
-		OPEN_EXISTING, FILE_FLAG_OVERLAPPED, 0);
+		OPEN_EXISTING, NULL, 0);
 	if (hCOMRadio == INVALID_HANDLE_VALUE) {
 		prints(L"ERROR OPENING USB COM PORT\N");
 	}
@@ -1215,11 +1239,11 @@ void initUSBRadio() {
 	}
 	//prints(L"Baudrate %d abort on error %d\n", dcb.BaudRate, dcb.fAbortOnError);
 
-	dcb.BaudRate = 115200;
+	dcb.BaudRate = 9600;
 	dcb.ByteSize = 8;
 	dcb.Parity = NOPARITY;
 	dcb.StopBits = ONESTOPBIT;
-	dcb.EvtChar = 'a';
+	//dcb.EvtChar = 'a';
 
 	if (!SetCommState(hCOMRadio, &dcb))
 	{
@@ -1230,18 +1254,18 @@ void initUSBRadio() {
 		prints(L"Radio SetCommTimeouts failed with error %d.\n", GetLastError());
 	}
 
-	if (!SetCommMask(hCOMRadio, EV_RXCHAR)) {
-		prints(L"Radio SetCommMask failed with error %d.\n", GetLastError());
-	}
+	//if (!SetCommMask(hCOMRadio, EV_RXCHAR)) {
+	//	prints(L"Radio SetCommMask failed with error %d.\n", GetLastError());
+	//}
 
-	if (WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus)) {
-		prints(L"Radio wait Com event %X\n", dwCommEvent);
-	}
-	else {
-		if (GetLastError() != ERROR_IO_PENDING) {
-			prints(L"WaitCommEvent failed with error %d\n", GetLastError());
-		}
-	}
+	//if (WaitCommEvent(hCOMRadio, &dwCommEvent, &osStatus)) {
+	//	prints(L"Radio wait Com event %X\n", dwCommEvent);
+	//}
+	//else {
+	//	if (GetLastError() != ERROR_IO_PENDING) {
+	//		prints(L"WaitCommEvent failed with error %d\n", GetLastError());
+	//	}
+	//}
 
 	//testUSBOK();
 
