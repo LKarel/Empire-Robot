@@ -10,7 +10,7 @@
 #define COMPORTDONGLE L"COM3" //3 on NUC
 #define BALLRADIUS (1.5 / 100.0)
 #define GOALMIDHEIGHT (5.0 / 100.0)
-#define FIELDGREENCOUNTTHRESHOLD 40000
+#define FIELDGREENCOUNTTHRESHOLD 55000
 
 HANDLE readySignal = CreateEventW(NULL, FALSE, FALSE, NULL);
 HANDLE newImageAnalyzed = CreateEventW(NULL, FALSE,FALSE,NULL);
@@ -55,6 +55,7 @@ extern int fieldGreenPixelCountShare;
 extern bool isLineStraightAhead;
 wchar_t buffer[128] = {}; //used for formatting text
 
+bool streqStart(char* string1, char* string2, int minimumEqual);
 void sendString(HANDLE hComm, char* outputBuffer);
 int receiveString(HANDLE hComm, char* outputBuffer, DWORD bytesRead);
 void initCOMPort();
@@ -239,11 +240,13 @@ void play() {
 			//update FPS rate after every 5 images
 			++FPS2Count;
 			if (FPS2Count % 5 == 0) {
-				receiveCommand();
 				float FPS = 5.0 / FPS2Timer.time();
 				swprintf_s(buffer, L"FPS2: %.2f", FPS);
 				SetWindowText(statusFPS2, buffer);
 				FPS2Timer.start();
+			}
+			if (FPS2Count % 10 == 0) {
+				receiveCommand();
 			}
 			break;
 		default:
@@ -464,7 +467,7 @@ void play() {
 			sendString(hCOMDongle, "9:bl\n");
 
 			ignoreBall = true;
-			ignoreX = 20.0 / 100.0, ignoreY = 0;
+			ignoreX = 25.0 / 100.0, ignoreY = 0;
 			ignoreTimer.start();
 
 			state = lookForBall;
@@ -918,12 +921,23 @@ void respondACK() {
 void receiveCommand() { //the character 'a' was received from the radio, now read the buffer, find all the a-s and check for commands
 	DWORD bytesRead = 0;
 	DWORD start = 0, length = 0; //the current position in the buffer and the length of the unread buffer
+	DWORD errors = 0;
+	COMSTAT status = {};
+	ClearCommError(hCOMRadio, &errors, &status);
+	if (errors) {
+		prints(L"ClearCommError errors: %X.\n", errors);
+	}
 	char readBuffer[128] = {};
 	//readCOM(hCOMRadio, readBuffer, 12, bytesRead);
-	ReadFile(hCOMRadio, readBuffer, 12, &bytesRead, NULL);
+	if (!ReadFile(hCOMRadio, readBuffer, 12, &bytesRead, NULL)) {
+		prints(L"Radio ReadFile failed with error: %X.\n", GetLastError());
+	}
 	length += bytesRead;
+	if (bytesRead != 0) {
+		prints(L"read %d bytes 1: %S\n", bytesRead, readBuffer);
+	}
 	//prints(L"Checking command v1: %S, valid: %d\n", readBuffer + start, validCommand(readBuffer));
-	if (length < 12) {
+	if (length == 0) {
 		return;
 	}
 
@@ -933,12 +947,17 @@ void receiveCommand() { //the character 'a' was received from the radio, now rea
 			--length;
 		}
 		else {
-			if (length < 12) {
+			if (length == 0) {
 				//readCOM(hCOMRadio, readBuffer + start + length, 12, bytesRead);
-				ReadFile(hCOMRadio, readBuffer + start + length, 12, &bytesRead, NULL);
+				if(!ReadFile(hCOMRadio, readBuffer + start + length, 12, &bytesRead, NULL)) {
+					prints(L"Radio ReadFile failed with error: %X.\n", GetLastError());
+				}
+				if (bytesRead != 0) {
+					prints(L"read %d bytes 2: %S\n", bytesRead, readBuffer);
+				}
 				//prints(L"Checking command v2: %S, valid: %d\n", readBuffer + start, validCommand(readBuffer));
 				length += bytesRead;
-				if (length < 12) {
+				if (length == 0) {
 					//prints(L"returning\n");
 					return;
 				}
@@ -961,10 +980,15 @@ void receiveCommand() { //the character 'a' was received from the radio, now rea
 		}
 		if (length == 0) {
 			//readCOM(hCOMRadio, readBuffer + start, 12, bytesRead);
-			ReadFile(hCOMRadio, readBuffer + start, 12, &bytesRead, NULL);
+			if(!ReadFile(hCOMRadio, readBuffer + start, 12, &bytesRead, NULL)) {
+				prints(L"Radio ReadFile failed with error: %X.\n", GetLastError());
+			}
+			if (bytesRead != 0) {
+				prints(L"read %d bytes 3: %S\n", bytesRead, readBuffer);
+			}
 			length += bytesRead;
 			//prints(L"Checking command v4: %S, valid: %d\n", readBuffer + start, validCommand(readBuffer));
-			if (length < 12) {
+			if (length == 0) {
 				//prints(L"returning\n");
 				return;
 			}
@@ -1041,19 +1065,19 @@ void initCOMPort() {
 
 boolean validCommand(char* readBuffer) {
 	char tempBuffer[32] = {};
-	CopyMemory(tempBuffer, readBuffer, 12);
-	if (lstrcmpA(tempBuffer + 3, "STOP-----") != 0 && lstrcmpA(tempBuffer + 3, "START----") != 0) {
+	CopyMemory(tempBuffer, readBuffer+3, 4);
+	if (streqStart(tempBuffer, "STO", 3) == 0 && streqStart(tempBuffer, "STA", 3) == 0) {
 		return FALSE;
 	}
-	if (tempBuffer[0] != 'a') {
+	if (readBuffer[0] != 'a') {
 		return FALSE;
 	}
-	if (tempBuffer[1] != 'A' && tempBuffer[1] != 'B') {
+	if (readBuffer[1] != 'A' && readBuffer[1] != 'B') {
 		return FALSE;
 	}
 	char* allowed = "XABCD";
 	for (int i = 0; i < strlen(allowed); ++i) {
-		if (allowed[i] == tempBuffer[2]) {
+		if (allowed[i] == readBuffer[2]) {
 			//prints(L"Received from radio: %S\n", tempBuffer);
 			return TRUE;
 		}
@@ -1064,17 +1088,21 @@ boolean validCommand(char* readBuffer) {
 void checkCommand(char* readBuffer) {
 	char tempBuffer[32] = {};
 	CopyMemory(tempBuffer, readBuffer, 12);
+	char commandBuffer[32] = {};
+	CopyMemory(commandBuffer, readBuffer + 3, 4);
 	if (validCommand(readBuffer)) {
+		prints(L"Command: %S\n", tempBuffer);
 		if (readBuffer[1] == currentID[0]) {
 			if ((readBuffer[2] == 'X' || readBuffer[2] == currentID[1]) && listenToRadio) {
-				if (strcmp(tempBuffer+3, "STOP-----") == 0) {
+				prints(L"Command 2: %S\n", tempBuffer);
+				if (streqStart(commandBuffer, "STO", 3)) {
 					ResetEvent(startSignal);
 					SetEvent(stopSignal);
 					if (readBuffer[2] == currentID[1]) {
 						respondACK();
 					}
 				}
-				else if (strcmp(tempBuffer+3, "START----") == 0) {
+				else if (streqStart(commandBuffer, "STA", 3)) {
 					ResetEvent(stopSignal);
 					SetEvent(startSignal);
 					if (readBuffer[2] == currentID[1]) {
@@ -1211,9 +1239,9 @@ float calculateDirection(lineInfo line) {
 
 void initUSBRadio() {
 	COMMTIMEOUTS timeouts;
-	timeouts.ReadIntervalTimeout = 2; //ms, max time before arrival of next byte
-	timeouts.ReadTotalTimeoutConstant = 1; //added to multiplier*bytes
-	timeouts.ReadTotalTimeoutMultiplier = 1; //ms times bytes
+	timeouts.ReadIntervalTimeout = 30; //ms, max time before arrival of next byte
+	timeouts.ReadTotalTimeoutConstant = 15; //added to multiplier*bytes
+	timeouts.ReadTotalTimeoutMultiplier = 4; //ms times bytes
 	timeouts.WriteTotalTimeoutConstant = 5;
 	timeouts.WriteTotalTimeoutMultiplier = 5;
 
@@ -1237,12 +1265,13 @@ void initUSBRadio() {
 	{
 		prints(L"Radio GetCommState failed with error %d.\n", GetLastError());
 	}
-	//prints(L"Baudrate %d abort on error %d\n", dcb.BaudRate, dcb.fAbortOnError);
+	//prints(L"Radio baudrate %d abort on error %d\n", dcb.BaudRate, dcb.fAbortOnError);
 
 	dcb.BaudRate = 9600;
 	dcb.ByteSize = 8;
 	dcb.Parity = NOPARITY;
 	dcb.StopBits = ONESTOPBIT;
+	dcb.fAbortOnError = FALSE;
 	//dcb.EvtChar = 'a';
 
 	if (!SetCommState(hCOMRadio, &dcb))
@@ -1325,6 +1354,22 @@ void readCOM(HANDLE hCOM, char* readBuffer, DWORD bytesToRead, DWORD &bytesRead)
 			if (!GetOverlappedResult(hCOMRadio, &osReader, &bytesRead, TRUE)) {
 				prints(L"USB radio read GetOverlappedResult failed with error %X\n", GetLastError());
 			}
+		}
+	}
+}
+
+bool streqStart(char* string1, char* string2, int minimumEqual) {
+	for (int i = 0;;++i) {
+		if (string1[i] == 0 || string2[i] == 0) {
+			if (i >= minimumEqual) {
+				return true;
+			}
+			else {
+				return false;
+			}
+		}
+		else if (string1[i] != string2[i]) {
+			return false;
 		}
 	}
 }
