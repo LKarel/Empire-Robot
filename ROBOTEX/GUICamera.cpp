@@ -1111,7 +1111,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 240, 110, 20, hwnd, (HMENU)ID_STATUS_FPS, hInstance, NULL);
 		statusFPS2 = CreateWindowExW(0, L"STATIC", L"FPS2: 0.00",
 			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 260, 110, 20, hwnd, (HMENU)ID_STATUS_FPS, hInstance, NULL);
-		statusBall = CreateWindowExW(0, L"STATIC", L"Ball status",
+		statusBall = CreateWindowExW(0, L"STATIC", L"Ball 0",
 			WS_VISIBLE | WS_CHILD | SS_CENTER, 640 + 640, 280, 110, 20, hwnd, (HMENU)ID_STATUS_BALL, hInstance, NULL);
 		goalGuessState = CreateWindowExW(0, L"STATIC", L"Goal direction",
 			WS_VISIBLE | WS_CHILD | SS_CENTER , 640 + 640, 300, 110, 20, hwnd, (HMENU)ID_STATUS_BALL, hInstance, NULL);
