@@ -123,7 +123,6 @@ int main() {
 void listenToCommands() {
 	initCOMPort();
 	initUSBRadio();
-	//sendString(hCOMDongle, "9:fs0\n");
 	lastSpeedSentTimer.start();
 	HANDLE waitHandles[3] = { startSignal, osStatusDongle.hEvent };
 
@@ -198,6 +197,7 @@ void play() {
 	sendString(hCOMDongle, "9:bl\n");
 	lastBallFoundTimer.start();
 	lastGoalFoundTimer.start();
+	movingTimer.start();
 
 	while (true) {
 
@@ -275,11 +275,11 @@ void play() {
 				ignoreY = ignoreYNew;
 
 				swprintf_s(buffer, L"IgX %.2f IgY %.2f\n NX %.2f NY %.2f", ignoreX, ignoreY, ignoreXNew, ignoreYNew);
-				//SetWindowText(infoGUI2, buffer);
+				SetWindowText(infoGUI2, buffer);
 			}
 		}
 		else {
-			//SetWindowText(infoGUI2, L"Ignore OFF");
+			SetWindowText(infoGUI2, L"Ignore OFF");
 		}
 
 		//keep track of the likely direction to turn to to find the goal
@@ -349,7 +349,7 @@ void play() {
 
 		if (state == lookForBall) {
 			if (isBallInDribbler) {
-				prints(L"Looking for goal");
+				prints(L"Looking for goal\n");
 				state = lookForGoal;
 				movingTimer.start();
 			}
@@ -381,7 +381,7 @@ void play() {
 			if (isBallInDribbler) {
 				rotateAroundCenter(0);
 				Sleep(0);
-				prints(L"Looking for goal");
+				prints(L"Looking for goal\n");
 				state = lookForGoal;
 				movingTimer.start();
 			}
@@ -403,7 +403,7 @@ void play() {
 		}
 		if (state == lookForGoal) {
 			//prints(L"Looking for goal\n");
-			SetWindowText(stateStatusGUI, L"Looking for goal");
+			SetWindowText(stateStatusGUI, L"Looking for goal\n");
 			if (isBallInDribbler) {
 				int x = 0, y = 0;
 				float floorX, floorY;
@@ -459,12 +459,11 @@ void play() {
 				continue;
 			}
 			kick();
-			Sleep(80);
-			prints(L"KICKED\n");
+			Sleep(20);
 			charged = false;
 
-			isBallInDribbler = false;
-			sendString(hCOMDongle, "9:bl\n");
+			//isBallInDribbler = false;
+			//sendString(hCOMDongle, "9:bl\n");
 
 			ignoreBall = true;
 			ignoreX = 25.0 / 100.0, ignoreY = 0;
@@ -474,7 +473,7 @@ void play() {
 			movingTimer.start();
 			prints(L"Looking for ball\n");
 
-			Sleep(80);
+			//Sleep(80);
 			charge();
 			chargingTimer.start();
 		}
@@ -575,7 +574,9 @@ bool isLineInFront() {
 int ballsOnFieldInSight() {
 	int ballCount = 0;
 	for (int i = 0; i < ballsShare.count; ++i) {
-		if (!ballsShare.data[i].isObjectAcrossLine) {
+		float floorX = 0, floorY = 0;
+		convertToFloorCoordinates(ballsShare.data[i].x, ballsShare.data[i].y, floorX, floorY, BALLRADIUS);
+		if (!ballsShare.data[i].isObjectAcrossLine && !(ignoreBall && ignoreX == floorX && ignoreY == floorY)) {
 			ballCount++;
 		}
 	}
@@ -587,10 +588,12 @@ void kick(int microSeconds) { //kick for a certain amount of microseconds
 	char buffer[16] = {};
 	sprintf_s(buffer, "9:k\n", microSeconds);
 	sendString(hCOMDongle, buffer);
+	prints(L"Kicked\n");
 }
 
 void kick() { //kick for the default duration
 	sendString(hCOMDongle, "9:k\n");
+	prints(L"Kicked\n");
 }
 
 void charge() {
@@ -776,7 +779,7 @@ void driveToFloorXYPID(float floorX, float floorY, float initialBallDistance) {
 	//	angularVelocityP, angularVelocityI, angularVelocityD);
 	
 	swprintf_s(buffer, L"s: %.2f, av: %.2f", currentDrivingState.speed, currentDrivingState.angularVelocity);
-	SetWindowTextW(infoGUI2, buffer);
+	//SetWindowTextW(infoGUI2, buffer);
 }
 
 
@@ -845,7 +848,7 @@ int findNearestFloorBall(float& nearestFloorX, float& nearestFloorY, int& curren
 	for (int i = 0; i < ballsShare.count; ++i) {
 		float floorX, floorY;
 		convertToFloorCoordinates(ballsShare.data[i].x, ballsShare.data[i].y, floorX, floorY, BALLRADIUS);
-		if (!ballsShare.data[i].isObjectAcrossLine && !(ignoreBall && nearestX == ignoreX && nearestY == ignoreY)) {
+		if (!ballsShare.data[i].isObjectAcrossLine && !(ignoreBall && floorX == ignoreX && floorY == ignoreY)) {
 			ballCount++;
 			if ((nearestX == 0 || floorX*floorX + floorY*floorY < nearestX*nearestX + nearestY*nearestY)) {
 				nearestX = floorX, nearestY = floorY;
@@ -1011,8 +1014,8 @@ void initCOMPort() {
 	timeouts.ReadIntervalTimeout = 15;
 	timeouts.ReadTotalTimeoutConstant = 15;
 	timeouts.ReadTotalTimeoutMultiplier = 15;
-	timeouts.WriteTotalTimeoutConstant = 60;
-	timeouts.WriteTotalTimeoutMultiplier = 25;
+	timeouts.WriteTotalTimeoutConstant = 20;
+	timeouts.WriteTotalTimeoutMultiplier = 10;
 
 
 	osReaderDongle.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
