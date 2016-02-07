@@ -56,6 +56,8 @@ bool checkRoundness(objectCollection& balls, int i, DWORD* analyzeBuffer, int ob
 bool isLineBetweenRobotAndBall(int ballX, int ballY, BYTE* pBuffer);
 bool isLineBetweenRobotAndBall2(int ballX, int ballY, BYTE* pBuffer);
 bool isOnTopOfRobot(int ballX, int ballY, BYTE* pBuffer);
+void WritePicDataToFile();
+void ReadPicDataFromFile();
 
 //variables specific to the way the camera is set up, it's what Windows DirectShow uses
 IMediaControl *pControl = NULL;
@@ -242,6 +244,13 @@ void analyzePixelSurroundings(objectCollection &objects, colorValues &colors, in
 						OBJECTINDEX(pBufferCopy[x2 + (y - 1) * 640]) == index2) {
 						pBufferCopy[x2 + (y - 1) * 640] = index + MAKEOBJID(objectType);
 								//((DWORD*)g_pBuffer)[x2 + (y - 1) * 640] = index * 5; //test
+					}
+				}
+				//also change the previous pixels with the old index to the new ones, so when we encounter theme we merge with the right object
+				for (int x2 = 0; x2 < x; ++x2) {
+					if (GETOBJID(pBufferCopy[x2 + y * 640]) == objectType &&
+						OBJECTINDEX(pBufferCopy[x2 + y * 640]) == index2) {
+						pBufferCopy[x2 + y * 640] = index + MAKEOBJID(objectType);
 					}
 				}
 			}
@@ -889,24 +898,133 @@ void drawRectangle(DWORD* pixBuffer, int x, int y, int width, int height, float 
 
 
 void analyzeTest() {
-	ballsPixelCount = 1;
-	ballColors.hueMin = 0.3, ballColors.hueMax = 0.6;
-	ballColors.saturationMin = 0.3, ballColors.saturationMax = 0.6;
-	ballColors.valueMin = 0.3, ballColors.valueMax = 0.6;
+	for (DWORD *pixBuffer = (DWORD*)g_pBuffer; pixBuffer < (DWORD*)g_pBuffer + 480 * 640; ++pixBuffer) {
+		DWORD pixel = *pixBuffer;
+		int blue = pixel & 0xFF, green = (pixel >> 8) & 0xFF, red = (pixel >> 16) & 0xFF;
 
-	pixelsTest = (DWORD*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 640 * 480 * 4);
+		float hue = HUE(red, green, blue);
+		float saturation = SATURATION(red, green, blue);
+		float value = VALUE(red, green, blue);
+		if (!COLORSFIT(ballColors, hue, saturation, value)) {
+			*pixBuffer = 0;
+		}
+		else {
+			//*pixBuffer = 0xFFFFFF;
+		}
+	}
 
-	DWORD color = HSVtoRGB((ballColors.hueMin + ballColors.hueMax) / 2,
-		(ballColors.saturationMin + ballColors.saturationMax) / 2,
-		(ballColors.valueMin + ballColors.valueMax) / 2);
+	DWORD* pixBuffer = (DWORD*)g_pBuffer;
+	DWORD* tempBuffer = (DWORD*)HeapAlloc(GetProcessHeap(), NULL, 640 * 480 * 4);
 
-	wprintf(L"zero %X\n", pixelsTest[5+(640)*5]);
-	drawRectangle(pixelsTest, 0, 0, 200, 200, 0 * PI/180.0, 0x0000FF);
-	wprintf(L"zero %X\n", pixelsTest[0]);
-	analyzeImage(0, (BYTE*)pixelsTest, 640 * 480 * 4);
+	////blacken everything not connected to the center
+	//ZeroMemory(tempBuffer, 640 * 480 * 4);
+	//tempBuffer[350 + 200 * 640] = 1;
+	//while (true) {
+	//	bool changedSomething = false;
+	//	for (int y = 0; y < 480; ++y) {
+	//		for (int x = 0; x < 640; ++x) {
+	//			if (tempBuffer[x + y * 640] == 1) {
+	//				if (x+1 < 640 && tempBuffer[x + 1 + y * 640] == 0) {
+	//					if (pixBuffer[x + 1 + y * 640]) {
+	//						tempBuffer[x + 1 + y * 640] = 1;
+	//						changedSomething = true;
+	//					}
+	//					else {
+	//						tempBuffer[x + 1 + y * 640] = 2;
+	//					}
+	//				}
+	//				if (x-1 > 0 && tempBuffer[x - 1 + y * 640] == 0) {
+	//					if (pixBuffer[x - 1 + y * 640]) {
+	//						tempBuffer[x - 1 + y * 640] = 1;
+	//						changedSomething = true;
+	//					}
+	//					else {
+	//						tempBuffer[x - 1 + y * 640] = 2;
+	//					}
+	//				}
+	//				if (y+1 < 480 && tempBuffer[x + (y+1) * 640] == 0) {
+	//					if (pixBuffer[x + (y + 1) * 640]) {
+	//						tempBuffer[x + (y + 1) * 640] = 1;
+	//						changedSomething = true;
+	//					}
+	//					else {
+	//						tempBuffer[x + (y + 1) * 640] = 2;
+	//					}
+	//				}
+	//				if (y-1 > 0 && tempBuffer[x + (y-1) * 640] == 0) {
+	//					if (pixBuffer[x + (y - 1) * 640]) {
+	//						tempBuffer[x + (y - 1) * 640] = 1;
+	//						changedSomething = true;
+	//					}
+	//					else {
+	//						tempBuffer[x + (y - 1) * 640] = 2;
+	//					}
+	//				}
+	//			}
+	//		}
+	//	}
+	//	if (!changedSomething) {
+	//		break;
+	//	}
+	//}
+
+	//for (int y = 0; y < 480; ++y) {
+	//	for (int x = 0; x < 640; ++x) {
+	//		if (tempBuffer[x + y * 640] != 1) {
+	//			pixBuffer[x + y * 640] = 0;
+	//		}
+	//	}
+	//}
+
+	////cut out some parts of the picture
+	//for (int y = 0; y < 480; ++y) {
+	//	for (int x = 0; x < 640; ++x) {
+	//		if (tempBuffer[x + y * 640] == 1) {
+	//			pixBuffer[x + y * 640] = 0xFFFFFF;
+	//		}
+	//	}
+	//}
+
+	//for (int y = 0; y < 480; ++y) {
+	//	for (int x = 0; x < 640; ++x) {
+	//		int shade = ((DWORD*)pBufferCopy)[x + 640 * y] % 256;
+	//		((DWORD*)g_pBuffer)[x + 640 * y] = (shade << 16) + (shade << 8) + shade;
+	//	}
+	//}
+
+	//for (int y = 225; y < 480; ++y) {
+	//	for (int x = 0; x < 640; ++x) {
+	//		pixBuffer[x + y * 640] = 0;
+	//	}
+	//}
+	//for (int y = 0; y < 480; ++y) {
+	//	for (int x = 240; x < 640; ++x) {
+	//		pixBuffer[x + y * 640] = 0;
+	//	}
+	//}
+
+	//for (int y = 0; y < 150; ++y) {
+	//	for (int x = 0; x < 640; ++x) {
+	//		pixBuffer[x + y * 640] = 0;
+	//	}
+	//}
+
+	analyzeImage(0, g_pBuffer, 0);
+
+
+	for (int y = 0; y < 480; ++y) {
+		for (int x = 0; x < 640; ++x) {
+			if (pixBuffer[x + y * 640] != 0) {
+				pixBuffer[x + y * 640] = 0xFFFFFF;
+			}
+		}
+	}
+
 	for (int i = 0; i < balls.count; ++i) {
-		wprintf(L"ball: %d, x = %d, y = %d, pixelcount = %d\n", i + 1, balls.data[i].x, 
-			balls.data[i].y, balls.data[i].pixelcount);
+		if (balls.data[i].pixelcount > 0) {
+			DWORD *pixBuffer = (DWORD*)g_pBuffer;
+			drawCross(balls.data[i].x, balls.data[i].y, 0xFF0000, g_pBuffer); //red
+		}
 	}
 }
 
@@ -1345,6 +1463,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		}
 		break;
 	case WM_LBUTTONDOWN:
+		POINTS click = MAKEPOINTS(lParam);
+		int x = click.x - 640;
+
+		int y = 480 - click.y;
+		prints(L"x: %d, y: %d\n", x, y);
 		SetFocus(hwndMain);
 		break;
 	}
@@ -2376,3 +2499,54 @@ void doubleObjectBufferSize(objectCollection* objects) {
 //	HeapFree(GetProcessHeap(), NULL, (objects->data));
 //	objects->data = buffer;
 //}
+
+void WritePicDataToFile() {
+	HANDLE dataFile = CreateFile(L"picdata.bmp", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_WRITE, NULL,
+		OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	DWORD numberOfBytesRead;
+
+	BITMAPFILEHEADER bmf = {};
+
+	bmf.bfType = 'MB';
+	bmf.bfSize = sizeof(bmih) + 640 * 480 * 4 + sizeof(bmf);
+	bmf.bfOffBits = sizeof(bmf) + sizeof(bmih);
+
+	WriteFile(dataFile, &bmf, sizeof(bmf), &numberOfBytesRead, NULL);
+	WriteFile(dataFile, &bmih, sizeof(bmih), &numberOfBytesRead, NULL);
+	WriteFile(dataFile, g_pBuffer, 480 * 640 * 4, &numberOfBytesRead, NULL);
+	CloseHandle(dataFile);
+}
+
+void ReadPicDataFromFile() {
+	HANDLE dataFile = CreateFile(L"picdata.bmp", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_WRITE, NULL,
+		OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	DWORD numberOfBytesRead;
+
+	BYTE* tempBuffer = (BYTE*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 480 * 640 * 3);
+
+	BITMAPFILEHEADER bmf = {};
+	BITMAPINFOHEADER bmih2 = {};
+
+	ReadFile(dataFile, &bmf, sizeof(bmf), &numberOfBytesRead, NULL);
+	ReadFile(dataFile, &bmih2, sizeof(bmih2), &numberOfBytesRead, NULL);
+
+	//prints(L"offset: %d, size bmf+bmih2: %d\n", bmf.bfOffBits, sizeof(bmf)+sizeof(bmih2));
+
+	//prints(L"2: bitcount: %d, compression: %d,  height: %d, planes: %d\n", bmih2.biBitCount, bmih2.biCompression, bmih2.biHeight, bmih2.biPlanes);
+	//prints(L"1: bitcount: %d, compression: %d,  height: %d, planes: %d\n", bmih.biBitCount, bmih.biCompression, bmih.biHeight, bmih.biPlanes);
+
+	if (bmih2.biBitCount == 24) {
+		ReadFile(dataFile, tempBuffer, 640 * 480 * 3, &numberOfBytesRead, NULL);
+
+		for (int i = 0; i < 640 * 480; ++i) {
+			for (int j = 0; j < 3; ++j) {
+				g_pBuffer[4 * i + j] = tempBuffer[3 * i + j];
+			}
+		}
+	}
+	else {
+		ReadFile(dataFile, g_pBuffer, 640 * 480 * 4, &numberOfBytesRead, NULL);
+	}
+
+	CloseHandle(dataFile);
+}
